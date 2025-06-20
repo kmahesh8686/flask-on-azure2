@@ -5,7 +5,6 @@ import requests
 import time
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
-import os
 
 app = Flask(__name__)
 CORS(app)
@@ -41,8 +40,8 @@ def send_through_proxy(target_url, result_container):
         pass
 
 @app.route('/WebResource.axd')
-def serve_webresource_script():
-    return send_file("webresource_script.js", mimetype="application/javascript")
+def serve_webresource():
+    return send_file("webresource_script.user.js", mimetype="application/javascript")
 
 @app.route('/fetch', methods=['GET'])
 def fetch_from_proxy():
@@ -70,18 +69,18 @@ def fetch_from_proxy():
     if result_container["content"]:
         soup = BeautifulSoup(result_container["content"], 'html.parser')
 
-        # ✅ Add <base href="...">
+        # Add <base href="...">
         head = soup.find("head")
         if head:
             base_tag = soup.new_tag("base", href=target_url)
             head.insert(0, base_tag)
 
-        # 🚫 Remove external WebResource.axd
+        # Rewrite WebResource.axd to local version
         for script_tag in soup.find_all("script", src=True):
             if "WebResource.axd" in script_tag["src"]:
                 script_tag["src"] = "/WebResource.axd"
 
-        # ✅ Rewrite all relative resource URLs
+        # Rewrite other resource URLs
         rewrite_tags = {
             'a': 'href',
             'link': 'href',
@@ -105,7 +104,7 @@ def fetch_from_proxy():
                     if not old_url.lower().startswith("http") or not is_same_domain(old_url, target_url):
                         node[attr] = urljoin(target_url, old_url)
 
-        # ✅ Inject cookies and patch JS
+        # Inject cookies and patch JavaScript
         cookie_js = "; ".join(f"{k}='{v}'" for k, v in result_container["cookies"].items())
 
         inject_script = soup.new_tag("script")
