@@ -20,7 +20,7 @@ PROXY = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_IP_PORT}"
 stored_response = {"content": None, "content_type": None}
 lock = threading.Lock()
 
-# 🔁 Rewrite relative URLs to full target domain URLs (NOT via /fetch)
+# 🔁 Rewrite all relative and root-relative URLs to full URLs
 def rewrite_urls(base_url, html_content):
     soup = BeautifulSoup(html_content, "html.parser")
 
@@ -39,22 +39,29 @@ def rewrite_urls(base_url, html_content):
     for tag, attr in tags_attrs.items():
         for element in soup.find_all(tag):
             orig_url = element.get(attr)
-            if orig_url and not orig_url.startswith(('data:', 'javascript:', '#', 'http', 'https')):
-                full_url = urljoin(base_url, orig_url)
-                element[attr] = full_url
+            if not orig_url:
+                continue
 
-    # Inline CSS (e.g., background-image: url(...))
+            # Skip unusable or special URLs
+            if orig_url.startswith(("data:", "javascript:", "#")):
+                continue
+
+            # Convert to full absolute URL
+            full_url = urljoin(base_url, orig_url)
+            element[attr] = full_url
+
+    # Rewrite inline CSS urls
     for tag in soup.find_all(style=True):
         tag['style'] = re.sub(
             r'url\(["\']?(.*?)["\']?\)',
             lambda m: f'url({urljoin(base_url, m.group(1))})'
-            if not m.group(1).startswith(('data:', 'http')) else m.group(0),
+            if not m.group(1).startswith(('data:', 'http', 'https')) else m.group(0),
             tag['style']
         )
 
     return str(soup)
 
-# 🚀 Thread worker to fetch through proxy
+# 🚀 Thread worker to send a request via proxy
 def send_through_proxy(target_url):
     global stored_response
     try:
@@ -79,7 +86,7 @@ def send_through_proxy(target_url):
     except Exception as e:
         print(f"[ERROR] {e}")
 
-# 🌐 Flask route: /fetch?url=https://target.site
+# 🌐 Route: /fetch?url=https://example.com
 @app.route('/fetch', methods=['GET'])
 def fetch_from_proxy():
     global stored_response
@@ -114,6 +121,6 @@ def fetch_from_proxy():
     else:
         return "No 200 OK response received", 502
 
-# 🏁 Start server
+# 🏁 Run the server
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
