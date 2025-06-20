@@ -10,9 +10,9 @@ app = Flask(__name__)
 CORS(app)
 
 # 🔐 Proxy Configuration
-PROXY_USER = "boss252proxy101"
-PROXY_PASS = "EXgckfla"
-PROXY_IP_PORT = "43.249.188.102:8000"
+PROXY_USER = "boss252proxy105"
+PROXY_PASS = "DPHZzinu"
+PROXY_IP_PORT = "43.249.188.106:8000"
 PROXY = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_IP_PORT}"
 
 # Shared response storage
