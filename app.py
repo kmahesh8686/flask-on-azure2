@@ -3,17 +3,18 @@ from flask_cors import CORS
 import threading
 import requests
 import time
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
 app = Flask(__name__)
 CORS(app)
 
-# 🔐 Authenticated Proxy Config
+# Proxy config
 PROXY_USER = "boss252proxy101"
 PROXY_PASS = "EXgckfla"
 PROXY_IP_PORT = "43.249.188.102:8000"
 PROXY = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_IP_PORT}"
 
-# Shared result store
 stored_response = {"content": None}
 lock = threading.Lock()
 
@@ -31,14 +32,13 @@ def send_through_proxy(target_url):
                 if stored_response["content"] is None:
                     stored_response["content"] = response.text
     except Exception:
-        pass  # Ignore errors
+        pass
 
 @app.route('/fetch', methods=['GET'])
 def fetch_from_proxy():
     global stored_response
     stored_response = {"content": None}
 
-    # 🎯 Get target URL from query param
     target_url = request.args.get('url')
     if not target_url:
         return "Missing ?url= parameter", 400
@@ -60,9 +60,19 @@ def fetch_from_proxy():
         t.join(timeout=0.1)
 
     if stored_response["content"]:
-        return Response(stored_response["content"], status=200, content_type="text/html")
+        # ✅ Rewrite relative links to absolute
+        soup = BeautifulSoup(stored_response["content"], 'html.parser')
+        for tag in soup.find_all(['a', 'img', 'script', 'link', 'form']):
+            attr = 'href' if tag.name in ['a', 'link'] else 'src'
+            if tag.has_attr(attr):
+                tag[attr] = urljoin(target_url, tag[attr])
+            elif tag.name == 'form' and tag.has_attr('action'):
+                tag['action'] = urljoin(target_url, tag['action'])
+
+        html = str(soup)
+        return Response(html, status=200, content_type="text/html")
     else:
         return "No 200 OK response received", 502
 
-# Expose the WSGI app to Azure App Service
+# For Azure
 app = app
