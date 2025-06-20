@@ -3,20 +3,16 @@ from flask_cors import CORS
 import threading
 import requests
 import time
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 
 app = Flask(__name__)
 CORS(app)
 
-# 🔐 Proxy Configuration
-PROXY_USER = "boss252proxy105"
-PROXY_PASS = "DPHZzinu"
-PROXY_IP_PORT = "43.249.188.106:8000"
+PROXY_USER = "your_username"
+PROXY_PASS = "your_password"
+PROXY_IP_PORT = "your.proxy.ip:port"
 PROXY = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_IP_PORT}"
 
-# Shared response storage
-stored_response = {"content": None}
+stored_response = {"content": None, "content_type": None}
 lock = threading.Lock()
 
 def send_through_proxy(target_url):
@@ -26,32 +22,32 @@ def send_through_proxy(target_url):
             target_url,
             proxies={"http": PROXY, "https": PROXY},
             headers={"Connection": "close"},
-            timeout=10
+            timeout=10,
+            stream=True  # important for binary data
         )
         if response.status_code == 200:
             with lock:
                 if stored_response["content"] is None:
-                    stored_response["content"] = response.text
+                    stored_response["content"] = response.content  # raw binary
+                    stored_response["content_type"] = response.headers.get("Content-Type", "application/octet-stream")
     except Exception:
-        pass  # Ignore failed threads
+        pass
 
 @app.route('/fetch', methods=['GET'])
 def fetch_from_proxy():
     global stored_response
-    stored_response = {"content": None}
+    stored_response = {"content": None, "content_type": None}
 
     target_url = request.args.get('url')
     if not target_url:
         return "Missing ?url= parameter", 400
 
-    # 🔄 Launch 5 concurrent requests
     threads = []
     for _ in range(5):
         t = threading.Thread(target=send_through_proxy, args=(target_url,))
         t.start()
         threads.append(t)
 
-    # ⏱ Wait until first 200 OK or timeout
     start_time = time.time()
     while time.time() - start_time < 15:
         with lock:
@@ -59,39 +55,13 @@ def fetch_from_proxy():
                 break
         time.sleep(0.2)
 
-    # Clean up
     for t in threads:
         t.join(timeout=0.1)
 
     if stored_response["content"]:
-        # ✅ Rewrite all relative URLs to absolute
-        soup = BeautifulSoup(stored_response["content"], 'html.parser')
+        return Response(stored_response["content"], status=200, content_type=stored_response["content_type"])
+    else:
+        return "No 200 OK response received", 502
 
-        rewrite_tags = {
-            'a': 'href',
-            'link': 'href',
-            'script': 'src',
-            'img': 'src',
-            'iframe': 'src',
-            'form': 'action',
-            'source': 'src',
-            'video': 'src',
-            'audio': 'src',
-            'embed': 'src',
-            'input': 'src',
-            'track': 'src',
-            'object': 'data'
-        }
-
-        for tag, attr in rewrite_tags.items():
-            for node in soup.find_all(tag):
-                if node.has_attr(attr):
-                    node[attr] = urljoin(target_url, node[attr])
-
-        html = str(soup)
-        return Response(html, status=200, content_type="text/html")
-
-    return "No 200 OK response received", 502
-
-# For Azure App Service deployment
-app = app
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
