@@ -15,7 +15,7 @@ PROXY_PASS = "EXgckfla"
 PROXY_IP_PORT = "43.249.188.102:8000"
 PROXY = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_IP_PORT}"
 
-# Lock-protected container (no persistent caching)
+# Lock-protected no-cache result container
 lock = threading.Lock()
 
 def is_same_domain(url, base):
@@ -65,12 +65,13 @@ def fetch_from_proxy():
     if result_container["content"]:
         soup = BeautifulSoup(result_container["content"], 'html.parser')
 
-        # ✅ Add base tag to help browser resolve relative paths
+        # ✅ Insert <base href="...">
         head = soup.find("head")
         if head:
             base_tag = soup.new_tag("base", href=target_url)
             head.insert(0, base_tag)
 
+        # ✅ Rewrite relative resources only (leave full URLs to original domain untouched)
         rewrite_tags = {
             'a': 'href',
             'link': 'href',
@@ -90,14 +91,44 @@ def fetch_from_proxy():
         for tag, attr in rewrite_tags.items():
             for node in soup.find_all(tag):
                 if node.has_attr(attr):
-                    original_url = node[attr]
-                    if not original_url.lower().startswith("http") or not is_same_domain(original_url, target_url):
-                        node[attr] = urljoin(target_url, original_url)
+                    old_url = node[attr]
+                    if not old_url.lower().startswith("http") or not is_same_domain(old_url, target_url):
+                        node[attr] = urljoin(target_url, old_url)
+
+        # ✅ Inject JavaScript to force all AJAX and form submissions to original domain
+        inject_script = soup.new_tag("script")
+        inject_script.string = f"""
+        (function() {{
+          const origin = "{target_url}";
+          document.querySelectorAll("form").forEach(f => {{
+            if (!f.action || f.action.startsWith(window.location.origin)) {{
+              f.action = origin;
+            }}
+          }});
+
+          const originalFetch = window.fetch;
+          window.fetch = function(url, ...args) {{
+            if (typeof url === "string" && url.startsWith("/")) {{
+              return originalFetch(origin + url, ...args);
+            }}
+            return originalFetch(url, ...args);
+          }};
+
+          const origOpen = XMLHttpRequest.prototype.open;
+          XMLHttpRequest.prototype.open = function(method, url, ...rest) {{
+            if (url.startsWith("/")) {{
+              arguments[1] = origin + url;
+            }}
+            return origOpen.apply(this, arguments);
+          }};
+        }})();
+        """
+        soup.body.append(inject_script)
 
         html = str(soup)
         return Response(html, status=200, content_type="text/html")
 
     return "No 200 OK response received", 502
 
-# ✅ Required for gunicorn/Azure
+# 🔁 For Azure gunicorn
 app = app
