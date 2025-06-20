@@ -9,7 +9,7 @@ CORS(app)
 
 PROXY_USER = "boss252proxy111"
 PROXY_PASS = "K3QIDSYA"
-PROXY_IP_PORT = "43.249.188.112.ip:8000"
+PROXY_IP_PORT = "43.249.188.112:8000"
 PROXY = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_IP_PORT}"
 
 stored_response = {"content": None, "content_type": None}
