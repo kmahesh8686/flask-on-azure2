@@ -7,9 +7,9 @@ import time
 app = Flask(__name__)
 CORS(app)
 
-PROXY_USER = "your_username"
-PROXY_PASS = "your_password"
-PROXY_IP_PORT = "your.proxy.ip:port"
+PROXY_USER = "boss252proxy111"
+PROXY_PASS = "K3QIDSYA"
+PROXY_IP_PORT = "43.249.188.112.ip:8000"
 PROXY = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_IP_PORT}"
 
 stored_response = {"content": None, "content_type": None}
