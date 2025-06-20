@@ -15,7 +15,6 @@ PROXY_PASS = "EXgckfla"
 PROXY_IP_PORT = "43.249.188.102:8000"
 PROXY = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_IP_PORT}"
 
-# Lock-protected no-cache result container
 lock = threading.Lock()
 
 def is_same_domain(url, base):
@@ -26,7 +25,8 @@ def is_same_domain(url, base):
 
 def send_through_proxy(target_url, result_container):
     try:
-        response = requests.get(
+        session = requests.Session()
+        response = session.get(
             target_url,
             proxies={"http": PROXY, "https": PROXY},
             headers={"Connection": "close"},
@@ -36,6 +36,7 @@ def send_through_proxy(target_url, result_container):
             with lock:
                 if result_container["content"] is None:
                     result_container["content"] = response.text
+                    result_container["cookies"] = session.cookies.get_dict()
     except Exception:
         pass
 
@@ -45,7 +46,7 @@ def fetch_from_proxy():
     if not target_url:
         return "Missing ?url= parameter", 400
 
-    result_container = {"content": None}
+    result_container = {"content": None, "cookies": {}}
     threads = []
     for _ in range(5):
         t = threading.Thread(target=send_through_proxy, args=(target_url, result_container))
@@ -65,13 +66,13 @@ def fetch_from_proxy():
     if result_container["content"]:
         soup = BeautifulSoup(result_container["content"], 'html.parser')
 
-        # ✅ Insert <base href="...">
+        # ✅ Add <base href="...">
         head = soup.find("head")
         if head:
             base_tag = soup.new_tag("base", href=target_url)
             head.insert(0, base_tag)
 
-        # ✅ Rewrite relative resources only (leave full URLs to original domain untouched)
+        # ✅ Rewrite resource URLs, ignore full URLs to original domain
         rewrite_tags = {
             'a': 'href',
             'link': 'href',
@@ -95,40 +96,53 @@ def fetch_from_proxy():
                     if not old_url.lower().startswith("http") or not is_same_domain(old_url, target_url):
                         node[attr] = urljoin(target_url, old_url)
 
-        # ✅ Inject JavaScript to force all AJAX and form submissions to original domain
+        # ✅ Inject cookies and patch fetch/ajax to use original domain
+        cookie_js = "; ".join(f"{k}='{v}'" for k, v in result_container["cookies"].items())
+
         inject_script = soup.new_tag("script")
         inject_script.string = f"""
         (function() {{
-          const origin = "{target_url}";
-          document.querySelectorAll("form").forEach(f => {{
-            if (!f.action || f.action.startsWith(window.location.origin)) {{
-              f.action = origin;
-            }}
-          }});
+            const origin = "{target_url}";
 
-          const originalFetch = window.fetch;
-          window.fetch = function(url, ...args) {{
-            if (typeof url === "string" && url.startsWith("/")) {{
-              return originalFetch(origin + url, ...args);
-            }}
-            return originalFetch(url, ...args);
-          }};
+            // Set cookies for original domain
+            document.cookie = "{cookie_js}; path=/; domain=.sand.telangana.gov.in";
 
-          const origOpen = XMLHttpRequest.prototype.open;
-          XMLHttpRequest.prototype.open = function(method, url, ...rest) {{
-            if (url.startsWith("/")) {{
-              arguments[1] = origin + url;
-            }}
-            return origOpen.apply(this, arguments);
-          }};
+            // Patch forms
+            document.querySelectorAll("form").forEach(f => {{
+                if (!f.action || f.action.startsWith(window.location.origin)) {{
+                    f.action = origin;
+                }}
+            }});
+
+            // Patch fetch
+            const originalFetch = window.fetch;
+            window.fetch = function(url, ...args) {{
+                if (typeof url === "string" && url.startsWith("/")) {{
+                    return originalFetch(origin + url, ...args);
+                }}
+                return originalFetch(url, ...args);
+            }};
+
+            // Patch XHR
+            const origOpen = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(method, url, ...rest) {{
+                if (url.startsWith("/")) {{
+                    arguments[1] = origin + url;
+                }}
+                return origOpen.apply(this, arguments);
+            }};
+
+            // Debug JS errors
+            window.onerror = function(msg, src, line, col, err) {{
+                console.log("JS error:", msg, "at", src, line + ":" + col);
+            }};
         }})();
         """
         soup.body.append(inject_script)
 
-        html = str(soup)
-        return Response(html, status=200, content_type="text/html")
+        return Response(str(soup), status=200, content_type="text/html")
 
     return "No 200 OK response received", 502
 
-# 🔁 For Azure gunicorn
+# ✅ Required for gunicorn
 app = app
