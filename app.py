@@ -1,42 +1,68 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, Response
 from flask_cors import CORS
 import threading
+import requests
+import time
 
 app = Flask(__name__)
 CORS(app)
 
+# 🔐 Authenticated Proxy Config
+PROXY_USER = "boss252proxy101"
+PROXY_PASS = "EXgckfla"
+PROXY_IP_PORT = "43.249.188.102:8000"
+PROXY = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_IP_PORT}"
+
+# Shared result store
+stored_response = {"content": None}
 lock = threading.Lock()
 
-# Keeps track of assignment counts per target name
-assignments = {}
+def send_through_proxy(target_url):
+    global stored_response
+    try:
+        response = requests.get(
+            target_url,
+            proxies={"http": PROXY, "https": PROXY},
+            headers={"Connection": "close"},
+            timeout=10
+        )
+        if response.status_code == 200:
+            with lock:
+                if stored_response["content"] is None:
+                    stored_response["content"] = response.text
+    except Exception:
+        pass  # Ignore errors
 
-@app.route('/assign-vehicle', methods=['POST'])
-def assign_vehicle():
-    global assignments
+@app.route('/fetch', methods=['GET'])
+def fetch_from_proxy():
+    global stored_response
+    stored_response = {"content": None}
 
-    with lock:
-        data = request.get_json()
-        target_name = data.get("targetName")
-        presets = data.get("presets")
+    # 🎯 Get target URL from query param
+    target_url = request.args.get('url')
+    if not target_url:
+        return "Missing ?url= parameter", 400
 
-        if not target_name or not presets:
-            return jsonify({"error": "Missing 'targetName' or 'presets'"}), 400
+    threads = []
+    for _ in range(5):
+        t = threading.Thread(target=send_through_proxy, args=(target_url,))
+        t.start()
+        threads.append(t)
 
-        vehicle_list = presets.get(target_name)
-        if not vehicle_list:
-            return jsonify({"vehicle_number": None})  # No vehicles mapped to this target
+    start_time = time.time()
+    while time.time() - start_time < 15:
+        with lock:
+            if stored_response["content"] is not None:
+                break
+        time.sleep(0.2)
 
-        count = assignments.get(target_name, 0)
+    for t in threads:
+        t.join(timeout=0.1)
 
-        if count < len(vehicle_list):
-            assigned_vehicle = vehicle_list[count]
-        else:
-            assigned_vehicle = None  # No more vehicles left
+    if stored_response["content"]:
+        return Response(stored_response["content"], status=200, content_type="text/html")
+    else:
+        return "No 200 OK response received", 502
 
-        assignments[target_name] = count + 1
-
-        return jsonify({"vehicle_number": assigned_vehicle})
-
-# This part is only used when testing locally
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5001)
+# Expose the WSGI app to Azure App Service
+app = app
