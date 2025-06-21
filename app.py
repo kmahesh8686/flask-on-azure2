@@ -1,149 +1,50 @@
-from flask import Flask, request, Response, send_file
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import threading
-import requests
-import time
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
 
 app = Flask(__name__)
 CORS(app)
 
-PROXY_USER = "boss252proxy101"
-PROXY_PASS = "EXgckfla"
-PROXY_IP_PORT = "43.249.188.102:8000"
-PROXY = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_IP_PORT}"
-
 lock = threading.Lock()
+assignments = {}
+presets_store = {}
 
-def is_same_domain(url, base):
-    try:
-        return urlparse(url).netloc == urlparse(base).netloc
-    except:
-        return False
+@app.route('/set-presets', methods=['POST'])
+def set_presets():
+    global presets_store
+    data = request.get_json()
+    new_presets = data.get("presets")
+    if not new_presets:
+        return jsonify({"error": "Missing 'presets'"}), 400
 
-def send_through_proxy(target_url, result_container):
-    try:
-        session = requests.Session()
-        response = session.get(
-            target_url,
-            proxies={"http": PROXY, "https": PROXY},
-            headers={"Connection": "close"},
-            timeout=10
-        )
-        if response.status_code == 200:
-            with lock:
-                if result_container["content"] is None:
-                    result_container["content"] = response.text
-                    result_container["cookies"] = session.cookies.get_dict()
-    except Exception:
-        pass
+    with lock:
+        presets_store = new_presets
+    return jsonify({"message": "Presets received", "count": len(presets_store)})
 
-@app.route('/WebResource.axd')
-def serve_webresource():
-    return send_file("webresource_script.user.js", mimetype="application/javascript")
+@app.route('/assign-vehicle', methods=['POST'])
+def assign_vehicle():
+    global assignments
 
-@app.route('/fetch', methods=['GET'])
-def fetch_from_proxy():
-    target_url = request.args.get('url')
-    if not target_url:
-        return "Missing ?url= parameter", 400
+    data = request.get_json()
+    target_name = data.get("targetName")
 
-    result_container = {"content": None, "cookies": {}}
-    threads = []
-    for _ in range(5):
-        t = threading.Thread(target=send_through_proxy, args=(target_url, result_container))
-        t.start()
-        threads.append(t)
+    if not target_name:
+        return jsonify({"error": "Missing 'targetName'"}), 400
 
-    start_time = time.time()
-    while time.time() - start_time < 15:
-        with lock:
-            if result_container["content"] is not None:
-                break
-        time.sleep(0.2)
+    with lock:
+        vehicle_list = presets_store.get(target_name)
+        if not vehicle_list:
+            return jsonify({"vehicle_number": None})
 
-    for t in threads:
-        t.join(timeout=0.1)
+        count = assignments.get(target_name, 0)
 
-    if result_container["content"]:
-        soup = BeautifulSoup(result_container["content"], 'html.parser')
+        if count < len(vehicle_list):
+            assigned_vehicle = vehicle_list[count]
+        else:
+            assigned_vehicle = None
 
-        # Add <base href="...">
-        head = soup.find("head")
-        if head:
-            base_tag = soup.new_tag("base", href=target_url)
-            head.insert(0, base_tag)
+        assignments[target_name] = count + 1
+        return jsonify({"vehicle_number": assigned_vehicle})
 
-        # Rewrite WebResource.axd to local version
-        for script_tag in soup.find_all("script", src=True):
-            if "WebResource.axd" in script_tag["src"]:
-                script_tag["src"] = "/WebResource.axd"
-
-        # Rewrite other resource URLs
-        rewrite_tags = {
-            'a': 'href',
-            'link': 'href',
-            'script': 'src',
-            'img': 'src',
-            'iframe': 'src',
-            'form': 'action',
-            'source': 'src',
-            'video': 'src',
-            'audio': 'src',
-            'embed': 'src',
-            'input': 'src',
-            'track': 'src',
-            'object': 'data'
-        }
-
-        for tag, attr in rewrite_tags.items():
-            for node in soup.find_all(tag):
-                if node.has_attr(attr):
-                    old_url = node[attr]
-                    if not old_url.lower().startswith("http") or not is_same_domain(old_url, target_url):
-                        node[attr] = urljoin(target_url, old_url)
-
-        # Inject cookies and patch JavaScript
-        cookie_js = "; ".join(f"{k}='{v}'" for k, v in result_container["cookies"].items())
-
-        inject_script = soup.new_tag("script")
-        inject_script.string = f"""
-        (function() {{
-            const origin = "{target_url}";
-            document.cookie = "{cookie_js}; path=/; domain=.sand.telangana.gov.in";
-
-            document.querySelectorAll("form").forEach(f => {{
-                if (!f.action || f.action.startsWith(window.location.origin)) {{
-                    f.action = origin;
-                }}
-            }});
-
-            const originalFetch = window.fetch;
-            window.fetch = function(url, ...args) {{
-                if (typeof url === "string" && url.startsWith("/")) {{
-                    return originalFetch(origin + url, ...args);
-                }}
-                return originalFetch(url, ...args);
-            }};
-
-            const origOpen = XMLHttpRequest.prototype.open;
-            XMLHttpRequest.prototype.open = function(method, url, ...rest) {{
-                if (url.startsWith("/")) {{
-                    arguments[1] = origin + url;
-                }}
-                return origOpen.apply(this, arguments);
-            }};
-
-            window.onerror = function(msg, src, line, col, err) {{
-                console.log("JS error:", msg, "at", src, line + ":" + col);
-            }};
-        }})();
-        """
-        soup.body.append(inject_script)
-
-        return Response(str(soup), status=200, content_type="text/html")
-
-    return "No 200 OK response received", 502
-
-app = app
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5001)
