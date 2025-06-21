@@ -7,24 +7,39 @@ CORS(app)
 
 lock = threading.Lock()
 
-# Keeps track of assignment counts per target name
-assignments = {}
+# Shared in-memory store
+assignments = {}   # Tracks assigned count per targetName
+stored_presets = {}  # Stores presets uploaded once
 
-@app.route('/assign-vehicle', methods=['POST'])
-def assign_vehicle():
-    global assignments
+# Endpoint to store presets and reset assignments
+@app.route('/set-presets', methods=['POST'])
+def set_presets():
+    global stored_presets, assignments
+    data = request.get_json()
+
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid presets format"}), 400
 
     with lock:
-        data = request.get_json()
-        target_name = data.get("targetName")
-        presets = data.get("presets")
+        stored_presets = data
+        assignments = {}  # Reset assignments when presets are updated
 
-        if not target_name or not presets:
-            return jsonify({"error": "Missing 'targetName' or 'presets'"}), 400
+    return jsonify({"message": "Presets stored and assignments reset."}), 200
 
-        vehicle_list = presets.get(target_name)
+# Endpoint to assign vehicle
+@app.route('/assign-vehicle', methods=['POST'])
+def assign_vehicle():
+    global stored_presets, assignments
+    data = request.get_json()
+    target_name = data.get("targetName")
+
+    if not target_name:
+        return jsonify({"error": "Missing 'targetName'"}), 400
+
+    with lock:
+        vehicle_list = stored_presets.get(target_name)
         if not vehicle_list:
-            return jsonify({"vehicle_number": None})  # No vehicles mapped to this target
+            return jsonify({"vehicle_number": None})  # No vehicles mapped
 
         count = assignments.get(target_name, 0)
 
@@ -35,8 +50,8 @@ def assign_vehicle():
 
         assignments[target_name] = count + 1
 
-        return jsonify({"vehicle_number": assigned_vehicle})
+    return jsonify({"vehicle_number": assigned_vehicle})
 
-# This part is only used when testing locally
+# Run the app locally
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001)
