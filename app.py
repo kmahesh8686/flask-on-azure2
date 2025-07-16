@@ -9,7 +9,7 @@ lock = threading.Lock()
 
 # Shared in-memory store
 assignments = {}   # Tracks assigned count per targetName
-stored_presets = {}  # Stores presets uploaded once
+stored_presets = {}  # Stores presets uploaded
 
 # Endpoint to store presets and reset assignments
 @app.route('/set-presets', methods=['POST'])
