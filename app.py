@@ -5,7 +5,7 @@ app = Flask(__name__)
 CORS(app)  # ✅ Enable CORS for all origins
 
 # 🔐 Valid token
-VALID_TOKEN = "abc123"
+VALID_TOKEN = "abc12"
 
 # 🧠 Temporary in-memory storage
 mobile_otp_dict = {}     # sim_number -> otp
