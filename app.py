@@ -1,57 +1,63 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import threading
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # ✅ Enable CORS for all origins
 
-lock = threading.Lock()
+# 🔐 Valid token
+VALID_TOKEN = "abc123"
 
-# Shared in-memory store
-assignments = {}   # Tracks assigned count per targetName
-stored_presets = {}  # Stores presets uploaded
+# 🧠 Temporary in-memory storage
+mobile_otp_dict = {}     # sim_number -> otp
+vehicle_otp_dict = {}    # vehicle_number -> otp
 
-# Endpoint to store presets and reset assignments
-@app.route('/set-presets', methods=['POST'])
-def set_presets():
-    global stored_presets, assignments
-    data = request.get_json()
 
-    if not isinstance(data, dict):
-        return jsonify({"error": "Invalid presets format"}), 400
+@app.route('/otp', methods=['POST'])
+def receive_otp():
+    token = request.form.get('token', '').strip()
+    sim = request.form.get('sim', '').strip()
+    otp = request.form.get('otp', '').strip()
+    vehicle = request.form.get('vehicle', '').strip()
 
-    with lock:
-        stored_presets = data
-        assignments = {}  # Reset assignments when presets are updated
+    if token != VALID_TOKEN:
+        return jsonify({"status": "unauthorized", "message": "Invalid token"}), 403
 
-    return jsonify({"message": "Presets stored and assignments reset."}), 200
+    if not otp:
+        return jsonify({"status": "error", "message": "OTP missing"}), 400
 
-# Endpoint to assign vehicle
-@app.route('/assign-vehicle', methods=['POST'])
-def assign_vehicle():
-    global stored_presets, assignments
-    data = request.get_json()
-    target_name = data.get("targetName")
+    if vehicle:
+        vehicle_otp_dict[vehicle] = otp
+        print(f"[VEHICLE] Stored -> {vehicle}: {otp}")
+    elif sim:
+        mobile_otp_dict[sim] = otp
+        print(f"[MOBILE] Stored -> {sim}: {otp}")
+    else:
+        return jsonify({"status": "error", "message": "Missing SIM and vehicle"}), 400
 
-    if not target_name:
-        return jsonify({"error": "Missing 'targetName'"}), 400
+    return jsonify({"status": "success", "message": "OTP stored"}), 200
 
-    with lock:
-        vehicle_list = stored_presets.get(target_name)
-        if not vehicle_list:
-            return jsonify({"vehicle_number": None})  # No vehicles mapped
 
-        count = assignments.get(target_name, 0)
+@app.route('/get/mobile/<mobile>', methods=['GET'])
+def get_mobile_otp(mobile):
+    otp = mobile_otp_dict.get(mobile)
+    if otp:
+        return jsonify({"status": "success", "otp": otp}), 200
+    return jsonify({"status": "not_found", "message": "No OTP found"}), 404
 
-        if count < len(vehicle_list):
-            assigned_vehicle = vehicle_list[count]
-        else:
-            assigned_vehicle = None  # No more vehicles left
 
-        assignments[target_name] = count + 1
+@app.route('/get/vehicle/<vehicle>', methods=['GET'])
+def get_vehicle_otp(vehicle):
+    otp = vehicle_otp_dict.get(vehicle)
+    if otp:
+        return jsonify({"status": "success", "otp": otp}), 200
+    return jsonify({"status": "not_found", "message": "No OTP found"}), 404
 
-    return jsonify({"vehicle_number": assigned_vehicle})
 
-# Run the app locally
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5001)
+@app.route('/list/mobile', methods=['GET'])
+def list_mobile():
+    return jsonify(mobile_otp_dict)
+
+
+@app.route('/list/vehicle', methods=['GET'])
+def list_vehicle():
+    return jsonify(vehicle_otp_dict)
