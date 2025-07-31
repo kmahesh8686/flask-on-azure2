@@ -3,9 +3,9 @@ from flask_cors import CORS
 from datetime import datetime
 
 app = Flask(__name__)
-CORS(app)  # ✅ Enable CORS for all routes
+CORS(app)  # Enable CORS for all routes
 
-# In-memory storage
+# In-memory storage for latest OTP
 latest_otp_data = {
     "otp": None,
     "vehicle": None,
@@ -24,7 +24,6 @@ def receive_otp():
         latest_otp_data['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         print(f"[{latest_otp_data['timestamp']}] 📱 OTP from App - OTP: {otp}, Vehicle: {vehicle}")
-
         return jsonify({"status": "success", "message": "OTP stored"}), 200
 
     except Exception as e:
@@ -34,18 +33,27 @@ def receive_otp():
 @app.route('/api/get-latest-otp', methods=['GET'])
 def get_latest_otp():
     if latest_otp_data["otp"]:
-        return jsonify({
+        # Prepare response
+        response = {
             "status": "success",
             "otp": latest_otp_data["otp"],
             "vehicle": latest_otp_data["vehicle"],
             "timestamp": latest_otp_data["timestamp"]
-        }), 200
+        }
+
+        # Clear OTP after serving it
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🖥️ OTP sent to browser - OTP: {latest_otp_data['otp']}")
+        latest_otp_data["otp"] = None
+        latest_otp_data["vehicle"] = None
+        latest_otp_data["timestamp"] = None
+
+        return jsonify(response), 200
     else:
         return jsonify({
             "status": "empty",
-            "message": "No OTP received yet"
+            "message": "No OTP available"
         }), 404
 
-# Only required for local run — Azure uses WSGI entry point (gunicorn/uwsgi)
+# Only needed for local development
 if __name__ == '__main__':
     app.run(debug=True)
