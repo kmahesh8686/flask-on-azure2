@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import threading
 
 app = Flask(__name__)
 CORS(app)
@@ -46,6 +45,20 @@ def get_latest_otp():
         return jsonify({"status": "success", "otp": otp}), 200
     else:
         return jsonify({"status": "error", "message": "OTP not found"}), 404
+
+@app.route("/api/otp-exists", methods=["GET"])
+def otp_exists():
+    if otp_storage:
+        return jsonify({
+            "status": "success",
+            "message": "OTPs available",
+            "keys": list(otp_storage.keys())
+        }), 200
+    else:
+        return jsonify({
+            "status": "empty",
+            "message": "No OTPs stored"
+        }), 200
 
 if __name__ == "__main__":
     app.run(debug=True)
