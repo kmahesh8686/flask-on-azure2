@@ -1,59 +1,51 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from datetime import datetime
+import threading
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+CORS(app)
 
-# In-memory storage for latest OTP
-latest_otp_data = {
-    "otp": None,
-    "vehicle": None,
-    "timestamp": None
-}
+# Predefined tokens
+valid_tokens = {"km8686", "km7676", "km0001", "km0002", "km0003"}
 
-@app.route('/api/receive-otp', methods=['POST'])
+# Store OTPs here: key = token-sim, value = {"otp": ..., "vehicle": ...}
+otp_storage = {}
+
+@app.route("/api/receive-otp", methods=["POST"])
 def receive_otp():
-    try:
-        data = request.get_json(force=True)
-        otp = data.get('otp')
-        vehicle = data.get('vehicle')
+    data = request.get_json()
+    token = data.get("token")
+    sim = data.get("sim")
+    otp = data.get("otp")
+    vehicle = data.get("vehicle")  # Optional
 
-        latest_otp_data['otp'] = otp
-        latest_otp_data['vehicle'] = vehicle
-        latest_otp_data['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if not token or not sim or not otp:
+        return jsonify({"status": "error", "message": "Missing data"}), 400
+    if token not in valid_tokens:
+        return jsonify({"status": "error", "message": "Invalid token"}), 403
 
-        print(f"[{latest_otp_data['timestamp']}] 📱 OTP from App - OTP: {otp}, Vehicle: {vehicle}")
-        return jsonify({"status": "success", "message": "OTP stored"}), 200
+    key = f"{token}-{sim}"
+    otp_storage[key] = {"otp": otp, "vehicle": vehicle}
+    return jsonify({"status": "success", "message": "OTP stored"}), 200
 
-    except Exception as e:
-        print("Error receiving from app:", e)
-        return jsonify({"status": "error", "message": str(e)}), 400
-
-@app.route('/api/get-latest-otp', methods=['GET'])
+@app.route("/api/get-latest-otp", methods=["GET"])
 def get_latest_otp():
-    if latest_otp_data["otp"]:
-        # Prepare response
-        response = {
-            "status": "success",
-            "otp": latest_otp_data["otp"],
-            "vehicle": latest_otp_data["vehicle"],
-            "timestamp": latest_otp_data["timestamp"]
-        }
+    token = request.args.get("token")
+    sim = request.args.get("sim")
 
-        # Clear OTP after serving it
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🖥️ OTP sent to browser - OTP: {latest_otp_data['otp']}")
-        latest_otp_data["otp"] = None
-        latest_otp_data["vehicle"] = None
-        latest_otp_data["timestamp"] = None
+    if not token or not sim:
+        return jsonify({"status": "error", "message": "Missing token or sim"}), 400
 
-        return jsonify(response), 200
+    key = f"{token}-{sim}"
+    otp_data = otp_storage.get(key)
+
+    if otp_data:
+        otp = otp_data["otp"]
+        # Remove it after sending
+        del otp_storage[key]
+        return jsonify({"status": "success", "otp": otp}), 200
     else:
-        return jsonify({
-            "status": "empty",
-            "message": "No OTP available"
-        }), 404
+        return jsonify({"status": "error", "message": "OTP not found"}), 404
 
-# Only needed for local development
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(debug=True)
