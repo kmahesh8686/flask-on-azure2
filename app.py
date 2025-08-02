@@ -1,64 +1,57 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import threading
 
 app = Flask(__name__)
 CORS(app)
 
-# Predefined tokens
-valid_tokens = {"km8686", "km7676", "km0001", "km0002", "km0003"}
+lock = threading.Lock()
 
-# Store OTPs here: key = token-sim, value = {"otp": ..., "vehicle": ...}
-otp_storage = {}
+# Shared in-memory store
+assignments = {}   # Tracks assigned count per targetName
+stored_presets = {}  # Stores presets uploaded
 
-@app.route("/api/receive-otp", methods=["POST"])
-def receive_otp():
+# Endpoint to store presets and reset assignments
+@app.route('/set-presets', methods=['POST'])
+def set_presets():
+    global stored_presets, assignments
     data = request.get_json()
-    token = data.get("token")
-    sim = data.get("sim")
-    otp = data.get("otp")
-    vehicle = data.get("vehicle")  # Optional
 
-    if not token or not sim or not otp:
-        return jsonify({"status": "error", "message": "Missing data"}), 400
-    if token not in valid_tokens:
-        return jsonify({"status": "error", "message": "Invalid token"}), 403
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid presets format"}), 400
 
-    key = f"{token}-{sim}"
-    otp_storage[key] = {"otp": otp, "vehicle": vehicle}
-    return jsonify({"status": "success", "message": "OTP stored"}), 200
+    with lock:
+        stored_presets = data
+        assignments = {}  # Reset assignments when presets are updated
 
-@app.route("/api/get-latest-otp", methods=["GET"])
-def get_latest_otp():
-    token = request.args.get("token")
-    sim = request.args.get("sim")
+    return jsonify({"message": "Presets stored and assignments reset."}), 200
 
-    if not token or not sim:
-        return jsonify({"status": "error", "message": "Missing token or sim"}), 400
+# Endpoint to assign vehicle
+@app.route('/assign-vehicle', methods=['POST'])
+def assign_vehicle():
+    global stored_presets, assignments
+    data = request.get_json()
+    target_name = data.get("targetName")
 
-    key = f"{token}-{sim}"
-    otp_data = otp_storage.get(key)
+    if not target_name:
+        return jsonify({"error": "Missing 'targetName'"}), 400
 
-    if otp_data:
-        otp = otp_data["otp"]
-        # Remove it after sending
-        del otp_storage[key]
-        return jsonify({"status": "success", "otp": otp}), 200
-    else:
-        return jsonify({"status": "error", "message": "OTP not found"}), 404
+    with lock:
+        vehicle_list = stored_presets.get(target_name)
+        if not vehicle_list:
+            return jsonify({"vehicle_number": None})  # No vehicles mapped
 
-@app.route("/api/otp-exists", methods=["GET"])
-def otp_exists():
-    if otp_storage:
-        return jsonify({
-            "status": "success",
-            "message": "OTPs available",
-            "keys": list(otp_storage.keys())
-        }), 200
-    else:
-        return jsonify({
-            "status": "empty",
-            "message": "No OTPs stored"
-        }), 200
+        count = assignments.get(target_name, 0)
 
-if __name__ == "__main__":
-    app.run(debug=True)
+        if count < len(vehicle_list):
+            assigned_vehicle = vehicle_list[count]
+        else:
+            assigned_vehicle = None  # No more vehicles left
+
+        assignments[target_name] = count + 1
+
+    return jsonify({"vehicle_number": assigned_vehicle})
+
+# Run the app locally
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5001)
