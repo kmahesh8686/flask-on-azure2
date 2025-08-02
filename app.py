@@ -1,57 +1,77 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import threading
+from datetime import datetime
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # Enable CORS for all routes
 
-lock = threading.Lock()
+# In-memory storage for latest OTP
+latest_otp_data = {
+    "otp": None,
+    "sim_number": None,
+    "token": None,
+    "timestamp": None
+}
 
-# Shared in-memory store
-assignments = {}   # Tracks assigned count per targetName
-stored_presets = {}  # Stores presets uploaded
+@app.route('/api/receive-otp', methods=['POST'])
+def receive_otp():
+    try:
+        data = request.get_json(force=True)
+        otp = data.get('otp')
+        sim_number = data.get('sim_number')
+        token = data.get('token')
 
-# Endpoint to store presets and reset assignments
-@app.route('/set-presets', methods=['POST'])
-def set_presets():
-    global stored_presets, assignments
-    data = request.get_json()
+        latest_otp_data['otp'] = otp
+        latest_otp_data['sim_number'] = sim_number
+        latest_otp_data['token'] = token
+        latest_otp_data['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    if not isinstance(data, dict):
-        return jsonify({"error": "Invalid presets format"}), 400
+        print(f"[{latest_otp_data['timestamp']}] 📱 OTP received - OTP: {otp}, SIM: {sim_number}, Token: {token}")
+        return jsonify({"status": "success", "message": "OTP stored"}), 200
 
-    with lock:
-        stored_presets = data
-        assignments = {}  # Reset assignments when presets are updated
+    except Exception as e:
+        print("Error receiving from app:", e)
+        return jsonify({"status": "error", "message": str(e)}), 400
 
-    return jsonify({"message": "Presets stored and assignments reset."}), 200
 
-# Endpoint to assign vehicle
-@app.route('/assign-vehicle', methods=['POST'])
-def assign_vehicle():
-    global stored_presets, assignments
-    data = request.get_json()
-    target_name = data.get("targetName")
+@app.route('/api/get-latest-otp', methods=['GET'])
+def get_latest_otp():
+    # Browser must send token and sim_number as query params
+    req_token = request.args.get("token")
+    req_sim_number = request.args.get("sim_number")
 
-    if not target_name:
-        return jsonify({"error": "Missing 'targetName'"}), 400
+    if not req_token or not req_sim_number:
+        return jsonify({"status": "error", "message": "Missing token or sim_number"}), 400
 
-    with lock:
-        vehicle_list = stored_presets.get(target_name)
-        if not vehicle_list:
-            return jsonify({"vehicle_number": None})  # No vehicles mapped
+    # Check if OTP exists and token + sim_number match
+    if latest_otp_data["otp"] and \
+       latest_otp_data["token"] == req_token and \
+       latest_otp_data["sim_number"] == req_sim_number:
 
-        count = assignments.get(target_name, 0)
+        response = {
+            "status": "success",
+            "otp": latest_otp_data["otp"],
+            "sim_number": latest_otp_data["sim_number"],
+            "token": latest_otp_data["token"],
+            "timestamp": latest_otp_data["timestamp"]
+        }
 
-        if count < len(vehicle_list):
-            assigned_vehicle = vehicle_list[count]
-        else:
-            assigned_vehicle = None  # No more vehicles left
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🖥️ OTP sent to browser - OTP: {latest_otp_data['otp']}")
 
-        assignments[target_name] = count + 1
+        # Clear OTP after serving
+        latest_otp_data["otp"] = None
+        latest_otp_data["sim_number"] = None
+        latest_otp_data["token"] = None
+        latest_otp_data["timestamp"] = None
 
-    return jsonify({"vehicle_number": assigned_vehicle})
+        return jsonify(response), 200
 
-# Run the app locally
+    elif latest_otp_data["otp"]:
+        # OTP exists but token/sim mismatch
+        return jsonify({"status": "forbidden", "message": "Invalid token or sim_number"}), 403
+    else:
+        return jsonify({"status": "empty", "message": "No OTP available"}), 404
+
+
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5001)
+    app.run(debug=True)
