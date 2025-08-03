@@ -5,7 +5,7 @@ from datetime import datetime
 app = Flask(__name__)
 CORS(app)
 
-# Store OTPs as a list of dicts
+# Store OTPs as a list
 otp_storage = []
 
 # Track browser sessions: {(token, sim_number): {"first_request": datetime}}
@@ -13,7 +13,7 @@ client_sessions = {}
 
 
 def now_str():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now().strftime("%Y-%m-a%d %H:%M:%S")
 
 
 @app.route('/api/receive-otp', methods=['POST'])
