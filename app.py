@@ -5,7 +5,7 @@ from datetime import datetime
 app = Flask(__name__)
 CORS(app)
 
-# Store OTPs as a list of dicts
+# Store OTPs as a list
 otp_storage = []
 
 # Track browser sessions: {(token, sim_number): {"first_request": datetime}}
