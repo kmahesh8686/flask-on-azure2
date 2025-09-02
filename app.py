@@ -5,17 +5,31 @@ from datetime import datetime
 app = Flask(__name__)
 CORS(app)
 
-# Separate storage for Mobile and Vehicle OTPs
+# =========================
+# Storage
+# =========================
+
+# OTP storage
 mobile_otps = []   # [{"otp":..., "token":..., "sim_number":..., "timestamp":...}]
 vehicle_otps = []  # [{"otp":..., "token":..., "vehicle":..., "timestamp":...}]
 
-# Track browser sessions
+# Browser sessions tracking
 client_sessions = {}  # key -> {"first_request": datetime}
 
+# Login detection storage
+login_sessions = {}  # mobile_number -> {"timestamp": datetime}
 
+
+# =========================
+# Helpers
+# =========================
 def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+
+# =========================
+# OTP Endpoints
+# =========================
 
 @app.route('/api/receive-otp', methods=['POST'])
 def receive_otp():
@@ -60,7 +74,6 @@ def get_latest_otp():
     if not token or (not sim_number and not vehicle):
         return jsonify({"status": "error", "message": "token + sim_number OR token + vehicle required"}), 400
 
-    # Normalize session key
     key = (token, sim_number if sim_number else vehicle)
     if key not in client_sessions:
         client_sessions[key] = {"first_request": datetime.now()}
@@ -68,13 +81,11 @@ def get_latest_otp():
     session_time = client_sessions[key]["first_request"]
 
     if vehicle:
-        # Vehicle OTP flow
         new_otps = [o for o in vehicle_otps
                     if o["token"] == token and o["vehicle"].upper() == vehicle and o["timestamp"] > session_time]
 
         if new_otps:
             latest = new_otps[-1]
-            # Remove sent OTPs
             vehicle_otps[:] = [o for o in vehicle_otps
                                if not (o["token"] == token and o["vehicle"].upper() == vehicle)]
             client_sessions.pop(key, None)
@@ -89,13 +100,11 @@ def get_latest_otp():
             return jsonify({"status": "empty", "message": "No new vehicle OTP"}), 200
 
     else:
-        # Mobile OTP flow
         new_otps = [o for o in mobile_otps
                     if o["token"] == token and o["sim_number"].upper() == sim_number and o["timestamp"] > session_time]
 
         if new_otps:
             latest = new_otps[-1]
-            # Remove sent OTPs
             mobile_otps[:] = [o for o in mobile_otps
                               if not (o["token"] == token and o["sim_number"].upper() == sim_number)]
             client_sessions.pop(key, None)
@@ -124,5 +133,59 @@ def status():
     }), 200
 
 
+# =========================
+# Login Detection Endpoints
+# =========================
+
+@app.route('/api/login-detect', methods=['POST'])
+def login_detect():
+    try:
+        data = request.get_json(force=True)
+        mobile_number = (data.get('mobile_number') or "").strip().upper()
+        if not mobile_number:
+            return jsonify({"status": "error", "message": "mobile_number required"}), 400
+
+        login_sessions[mobile_number] = {"timestamp": datetime.now()}
+        print(f"[{now_str()}] 🔑 Login detected for mobile: {mobile_number}")
+        return jsonify({"status": "success", "message": "Login detected"}), 200
+
+    except Exception as e:
+        print("Error in login-detect:", e)
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+
+@app.route('/api/login-found', methods=['GET'])
+def login_found():
+    try:
+        mobile_number = (request.args.get('mobile_number') or "").strip().upper()
+        if not mobile_number:
+            return jsonify({"status": "error", "message": "mobile_number required"}), 400
+
+        if mobile_number in login_sessions:
+            ts = login_sessions[mobile_number]["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+            print(f"[{now_str()}] 🔍 Login found for mobile: {mobile_number}")
+            return jsonify({"status": "found", "mobile_number": mobile_number, "timestamp": ts}), 200
+        else:
+            return jsonify({"status": "not_found", "mobile_number": mobile_number}), 200
+
+    except Exception as e:
+        print("Error in login-found:", e)
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+
+@app.route('/api/login-clear', methods=['POST'])
+def login_clear():
+    try:
+        login_sessions.clear()
+        print(f"[{now_str()}] 🧹 Cleared all stored login detections")
+        return jsonify({"status": "success", "message": "All login detections cleared"}), 200
+    except Exception as e:
+        print("Error in login-clear:", e)
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+
+# =========================
+# Run App
+# =========================
 if __name__ == '__main__':
     app.run(debug=True)
