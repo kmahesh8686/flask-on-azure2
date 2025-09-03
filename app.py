@@ -108,13 +108,10 @@ def status():
                     otp_data[t].pop(idx)
                     if not otp_data[t]:
                         otp_data.pop(t)
-            return redirect(url_for('status'))
-
         elif "delete_selected_logins" in request.form:
             logins_to_delete = request.form.getlist("login_rows")
             for m in logins_to_delete:
                 login_sessions.pop(m, None)
-            return redirect(url_for('status'))
 
     # Prepare OTP table rows
     otp_rows = ""
@@ -148,104 +145,23 @@ def status():
         <title>KM OTP Dashboard</title>
         <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
         <style>
-            body {{
-                font-family: 'Roboto', sans-serif;
-                margin: 0;
-                padding: 0;
-                background: #f0f2f5;
-            }}
-            h2 {{
-                text-align: center;
-                padding: 20px;
-                background: linear-gradient(90deg, #4b6cb7, #182848);
-                color: white;
-                margin: 0;
-                font-weight: 500;
-                letter-spacing: 1px;
-            }}
-            .container {{
-                display: flex;
-                min-height: calc(100vh - 70px);
-            }}
-            .sidebar {{
-                width: 220px;
-                background: #ffffff;
-                box-shadow: 2px 0 5px rgba(0,0,0,0.1);
-                padding: 20px;
-                display: flex;
-                flex-direction: column;
-            }}
-            .sidebar button {{
-                background: linear-gradient(90deg, #4b6cb7, #182848);
-                color: white;
-                border: none;
-                padding: 12px;
-                margin-bottom: 15px;
-                border-radius: 8px;
-                cursor: pointer;
-                font-weight: 500;
-                transition: 0.3s;
-            }}
-            .sidebar button:hover {{
-                transform: translateX(5px);
-                box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-            }}
-            .content {{
-                flex-grow: 1;
-                padding: 30px;
-            }}
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                background: white;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-                border-radius: 8px;
-                overflow: hidden;
-            }}
-            th, td {{
-                padding: 12px 15px;
-                text-align: left;
-            }}
-            th {{
-                background-color: #4b6cb7;
-                color: white;
-                font-weight: 500;
-            }}
-            tr:nth-child(even) {{background: #f7f9fc;}}
-            tr:hover {{background: #e0e7ff;}}
-            .section-header {{
-                font-size: 18px;
-                font-weight: 500;
-                margin-bottom: 10px;
-                color: #333;
-            }}
-            .btn-delete {{
-                background: #ff4d4f;
-                border: none;
-                color: white;
-                padding: 6px 12px;
-                border-radius: 6px;
-                cursor: pointer;
-                font-size: 13px;
-                transition: 0.3s;
-            }}
-            .btn-delete:hover {{
-                background: #ff7875;
-            }}
-            form button[type="submit"] {{
-                margin-top: 15px;
-                background: #4b6cb7;
-                color: white;
-                border: none;
-                padding: 10px 15px;
-                border-radius: 6px;
-                cursor: pointer;
-                font-weight: 500;
-                transition: 0.3s;
-            }}
-            form button[type="submit"]:hover {{
-                background: #182848;
-            }}
+            body {{ font-family: 'Roboto', sans-serif; margin:0; padding:0; background:#f0f2f5; }}
+            h2 {{ text-align:center; padding:20px; background:linear-gradient(90deg,#4b6cb7,#182848); color:white; margin:0; font-weight:500; letter-spacing:1px; }}
+            .container {{ display:flex; min-height: calc(100vh - 70px); }}
+            .sidebar {{ width:220px; background:#fff; box-shadow:2px 0 5px rgba(0,0,0,0.1); padding:20px; display:flex; flex-direction:column; }}
+            .sidebar button {{ background:linear-gradient(90deg,#4b6cb7,#182848); color:white; border:none; padding:12px; margin-bottom:15px; border-radius:8px; cursor:pointer; font-weight:500; transition:0.3s; }}
+            .sidebar button:hover {{ transform:translateX(5px); box-shadow:0 4px 15px rgba(0,0,0,0.2); }}
+            .content {{ flex-grow:1; padding:30px; }}
+            table {{ width:100%; border-collapse: collapse; background:white; box-shadow:0 2px 8px rgba(0,0,0,0.1); border-radius:8px; overflow:hidden; margin-bottom:15px; }}
+            th, td {{ padding:12px 15px; text-align:left; }}
+            th {{ background-color:#4b6cb7; color:white; font-weight:500; }}
+            tr:nth-child(even) {{background:#f7f9fc;}}
+            tr:hover {{background:#e0e7ff;}}
+            .section-header {{ font-size:18px; font-weight:500; margin-bottom:10px; color:#333; }}
+            .btn-delete {{ background:#ff4d4f; border:none; color:white; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px; transition:0.3s; }}
+            .btn-delete:hover {{ background:#ff7875; }}
+            form button[type="submit"] {{ margin-top:15px; background:#4b6cb7; color:white; border:none; padding:10px 15px; border-radius:6px; cursor:pointer; font-weight:500; transition:0.3s; }}
+            form button[type="submit"]:hover {{ background:#182848; }}
         </style>
         <script>
             function showSection(id){{
@@ -281,7 +197,7 @@ def status():
                 </div>
 
                 <div id="login_section" style="display:none;">
-                    <div class="section-header">Login Sessions</div>
+                    <div class="section-header">Login IDs</div>
                     <form method="POST">
                         <table>
                             <tr>
