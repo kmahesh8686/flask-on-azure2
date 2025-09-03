@@ -67,7 +67,7 @@ def receive_otp():
 
 @app.route('/api/get-latest-otp', methods=['GET'])
 def get_latest_otp():
-    token = (request.args.get('token') or "").strip()
+    token = (request.args.get('token') or "").strip().upper()
     sim_number = (request.args.get('sim_number') or "").strip().upper()
     vehicle = (request.args.get('vehicle') or "").strip().upper()
 
@@ -80,14 +80,18 @@ def get_latest_otp():
         print(f"[{now_str()}] 🖥️ Browser started polling for {key}")
     session_time = client_sessions[key]["first_request"]
 
+    # Handle vehicle OTPs
     if vehicle:
         new_otps = [o for o in vehicle_otps
                     if o["token"] == token and o["vehicle"].upper() == vehicle and o["timestamp"] > session_time]
-
         if new_otps:
             latest = new_otps[-1]
             vehicle_otps[:] = [o for o in vehicle_otps
                                if not (o["token"] == token and o["vehicle"].upper() == vehicle)]
+            
+            # Move to otp_data[token]
+            otp_data.setdefault(token, []).append(latest)
+
             client_sessions.pop(key, None)
             print(f"[{now_str()}] 🖥️ Vehicle OTP sent to browser: {latest['otp']} for {vehicle}")
             return jsonify({
@@ -99,14 +103,18 @@ def get_latest_otp():
         else:
             return jsonify({"status": "empty", "message": "No new vehicle OTP"}), 200
 
+    # Handle mobile OTPs
     else:
         new_otps = [o for o in mobile_otps
                     if o["token"] == token and o["sim_number"].upper() == sim_number and o["timestamp"] > session_time]
-
         if new_otps:
             latest = new_otps[-1]
             mobile_otps[:] = [o for o in mobile_otps
                               if not (o["token"] == token and o["sim_number"].upper() == sim_number)]
+
+            # Move to otp_data[token]
+            otp_data.setdefault(token, []).append(latest)
+
             client_sessions.pop(key, None)
             print(f"[{now_str()}] 🖥️ Mobile OTP sent to browser: {latest['otp']} for SIM {sim_number}")
             return jsonify({
@@ -117,6 +125,7 @@ def get_latest_otp():
             }), 200
         else:
             return jsonify({"status": "empty", "message": "No new mobile OTP"}), 200
+
 
 # =========================
 # Status Endpoint
