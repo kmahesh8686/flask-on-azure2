@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 from datetime import datetime
 
@@ -173,12 +173,82 @@ def login_found():
         return jsonify({"status": "error", "message": str(e)}), 400
 
 
-@app.route('/api/login-clear', methods=['POST'])
+# =========================
+# Login Management Page
+# =========================
+@app.route('/api/login-clear', methods=['GET', 'POST'])
 def login_clear():
     try:
-        login_sessions.clear()
-        print(f"[{now_str()}] 🧹 Cleared all stored login detections")
-        return jsonify({"status": "success", "message": "All login detections cleared"}), 200
+        msg = None
+        if request.method == 'POST':
+            action = request.form.get("action")
+            if action == "delete_selected":
+                selected = request.form.getlist("mobiles")
+                for m in selected:
+                    login_sessions.pop(m, None)
+                msg = f"Deleted {len(selected)} mobile(s)"
+            elif action == "delete_all":
+                login_sessions.clear()
+                msg = "Deleted all mobiles"
+            else:
+                msg = "No action taken"
+
+        rows = ""
+        for mobile, info in login_sessions.items():
+            ts = info["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+            rows += f"""
+              <tr>
+                <td><input type="checkbox" name="mobiles" value="{mobile}"></td>
+                <td>{mobile}</td>
+                <td>{ts}</td>
+              </tr>
+            """
+
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Login Sessions</title>
+          <style>
+            body {{ font-family: Arial, sans-serif; margin: 20px; }}
+            table {{ border-collapse: collapse; width: 100%; }}
+            th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; }}
+            th {{ background: #f0f0f0; }}
+            .actions {{ margin-top: 15px; }}
+            .msg {{ margin: 10px 0; color: green; }}
+          </style>
+        </head>
+        <body>
+          <h2>Stored Login Sessions</h2>
+          {f"<div class='msg'>{msg}</div>" if msg else ""}
+          <form method="POST">
+            <table>
+              <thead>
+                <tr>
+                  <th><input type="checkbox" id="checkAll"></th>
+                  <th>Mobile Number</th>
+                  <th>Timestamp</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows or "<tr><td colspan='3'>No logins found</td></tr>"}
+              </tbody>
+            </table>
+            <div class="actions">
+              <button type="submit" name="action" value="delete_selected">Delete Selected</button>
+              <button type="submit" name="action" value="delete_all">Delete All</button>
+            </div>
+          </form>
+          <script>
+            document.getElementById("checkAll").addEventListener("change",function(e){{
+              document.querySelectorAll("input[name='mobiles']").forEach(cb=>cb.checked=e.target.checked);
+            }});
+          </script>
+        </body>
+        </html>
+        """
+        return html
+
     except Exception as e:
         print("Error in login-clear:", e)
         return jsonify({"status": "error", "message": str(e)}), 400
