@@ -108,10 +108,13 @@ def status():
                     otp_data[t].pop(idx)
                     if not otp_data[t]:
                         otp_data.pop(t)
+            return redirect(url_for('status'))
+
         elif "delete_selected_logins" in request.form:
             logins_to_delete = request.form.getlist("login_rows")
             for m in logins_to_delete:
                 login_sessions.pop(m, None)
+            return redirect(url_for('status'))
 
     # Prepare OTP table rows
     otp_rows = ""
@@ -143,30 +146,36 @@ def status():
     <html>
     <head>
         <title>KM OTP Dashboard</title>
-        <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
         <style>
-            body {{ font-family: 'Roboto', sans-serif; margin:0; padding:0; background:#f0f2f5; }}
-            h2 {{ text-align:center; padding:20px; background:linear-gradient(90deg,#4b6cb7,#182848); color:white; margin:0; font-weight:500; letter-spacing:1px; }}
-            .container {{ display:flex; min-height: calc(100vh - 70px); }}
-            .sidebar {{ width:220px; background:#fff; box-shadow:2px 0 5px rgba(0,0,0,0.1); padding:20px; display:flex; flex-direction:column; }}
-            .sidebar button {{ background:linear-gradient(90deg,#4b6cb7,#182848); color:white; border:none; padding:12px; margin-bottom:15px; border-radius:8px; cursor:pointer; font-weight:500; transition:0.3s; }}
-            .sidebar button:hover {{ transform:translateX(5px); box-shadow:0 4px 15px rgba(0,0,0,0.2); }}
+            body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background:#f9f9f9; margin:0; padding:0; }}
+            h2 {{ margin-bottom: 20px; text-align:center; color:#333; }}
+            .container {{ display:flex; min-height:100vh; }}
+            .sidebar {{ width:220px; background:#2C3E50; padding:20px; box-shadow:2px 0 5px rgba(0,0,0,0.1); }}
+            .sidebar button {{ margin-bottom:15px; display:block; width:100%; padding:10px; border:none; background:#3498DB; color:white; font-weight:bold; cursor:pointer; border-radius:5px; transition:0.3s; }}
+            .sidebar button:hover {{ background:#2980B9; }}
             .content {{ flex-grow:1; padding:30px; }}
-            table {{ width:100%; border-collapse: collapse; background:white; box-shadow:0 2px 8px rgba(0,0,0,0.1); border-radius:8px; overflow:hidden; margin-bottom:15px; }}
-            th, td {{ padding:12px 15px; text-align:left; }}
-            th {{ background-color:#4b6cb7; color:white; font-weight:500; }}
-            tr:nth-child(even) {{background:#f7f9fc;}}
-            tr:hover {{background:#e0e7ff;}}
-            .section-header {{ font-size:18px; font-weight:500; margin-bottom:10px; color:#333; }}
-            .btn-delete {{ background:#ff4d4f; border:none; color:white; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px; transition:0.3s; }}
-            .btn-delete:hover {{ background:#ff7875; }}
-            form button[type="submit"] {{ margin-top:15px; background:#4b6cb7; color:white; border:none; padding:10px 15px; border-radius:6px; cursor:pointer; font-weight:500; transition:0.3s; }}
-            form button[type="submit"]:hover {{ background:#182848; }}
+            table {{ border-collapse: collapse; width:100%; background:white; border-radius:5px; overflow:hidden; box-shadow:0 2px 5px rgba(0,0,0,0.1); }}
+            th, td {{ border-bottom:1px solid #ddd; padding:10px; text-align:left; }}
+            th {{ background:#2980B9; color:white; }}
+            tr:hover {{ background:#f1f1f1; }}
+            button.submit-btn {{ background:#E74C3C; color:white; border:none; padding:10px 15px; border-radius:5px; cursor:pointer; margin-top:10px; }}
+            button.submit-btn:hover {{ background:#C0392B; }}
         </style>
         <script>
             function showSection(id){{
-                document.getElementById('otp_section').style.display = id=='otp_section'?'block':'none';
-                document.getElementById('login_section').style.display = id=='login_section'?'block':'none';
+                window.location.href = window.location.pathname + "?section=" + id;
+            }}
+
+            window.onload = function(){{
+                const params = new URLSearchParams(window.location.search);
+                const section = params.get('section');
+                if(section){{
+                    document.getElementById('otp_section').style.display = section=='otp_section'?'block':'none';
+                    document.getElementById('login_section').style.display = section=='login_section'?'block':'none';
+                }} else {{
+                    document.getElementById('otp_section').style.display = 'block';
+                    document.getElementById('login_section').style.display = 'none';
+                }}
             }}
         </script>
     </head>
@@ -179,7 +188,7 @@ def status():
             </div>
             <div class="content">
                 <div id="otp_section" style="display:none;">
-                    <div class="section-header">OTP Data</div>
+                    <h3>OTP Data</h3>
                     <form method="POST">
                         <table>
                             <tr>
@@ -192,12 +201,11 @@ def status():
                             </tr>
                             {otp_rows if otp_rows else '<tr><td colspan="6">No OTPs found</td></tr>'}
                         </table>
-                        <button type="submit" name="delete_selected_otps">Delete Selected</button>
+                        <button type="submit" name="delete_selected_otps" class="submit-btn">Delete Selected</button>
                     </form>
                 </div>
-
                 <div id="login_section" style="display:none;">
-                    <div class="section-header">Login IDs</div>
+                    <h3>Login IDs</h3>
                     <form method="POST">
                         <table>
                             <tr>
@@ -207,7 +215,7 @@ def status():
                             </tr>
                             {login_rows if login_rows else '<tr><td colspan="3">No login sessions found</td></tr>'}
                         </table>
-                        <button type="submit" name="delete_selected_logins">Delete Selected</button>
+                        <button type="submit" name="delete_selected_logins" class="submit-btn">Delete Selected</button>
                     </form>
                 </div>
             </div>
@@ -216,6 +224,7 @@ def status():
     </html>
     """
     return html
+
 
 # =========================
 # Login Detection
