@@ -110,10 +110,18 @@ def status():
                         otp_data.pop(t)
             return redirect(url_for('status'))
 
+        elif "delete_all_otps" in request.form:
+            otp_data.clear()
+            return redirect(url_for('status'))
+
         elif "delete_selected_logins" in request.form:
             logins_to_delete = request.form.getlist("login_rows")
             for m in logins_to_delete:
                 login_sessions.pop(m, None)
+            return redirect(url_for('status'))
+
+        elif "delete_all_logins" in request.form:
+            login_sessions.clear()
             return redirect(url_for('status'))
 
     # Prepare OTP table rows
@@ -158,7 +166,7 @@ def status():
             th, td {{ border-bottom:1px solid #ddd; padding:10px; text-align:left; }}
             th {{ background:#2980B9; color:white; }}
             tr:hover {{ background:#f1f1f1; }}
-            button.submit-btn {{ background:#E74C3C; color:white; border:none; padding:10px 15px; border-radius:5px; cursor:pointer; margin-top:10px; }}
+            button.submit-btn {{ background:#E74C3C; color:white; border:none; padding:10px 15px; border-radius:5px; cursor:pointer; margin-top:10px; margin-right:10px; }}
             button.submit-btn:hover {{ background:#C0392B; }}
         </style>
         <script>
@@ -202,6 +210,7 @@ def status():
                             {otp_rows if otp_rows else '<tr><td colspan="6">No OTPs found</td></tr>'}
                         </table>
                         <button type="submit" name="delete_selected_otps" class="submit-btn">Delete Selected</button>
+                        <button type="submit" name="delete_all_otps" class="submit-btn">Delete All</button>
                     </form>
                 </div>
                 <div id="login_section" style="display:none;">
@@ -216,6 +225,7 @@ def status():
                             {login_rows if login_rows else '<tr><td colspan="3">No login sessions found</td></tr>'}
                         </table>
                         <button type="submit" name="delete_selected_logins" class="submit-btn">Delete Selected</button>
+                        <button type="submit" name="delete_all_logins" class="submit-btn">Delete All</button>
                     </form>
                 </div>
             </div>
@@ -224,6 +234,7 @@ def status():
     </html>
     """
     return html
+
 
 
 # =========================
