@@ -1,6 +1,7 @@
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, redirect, url_for
 from flask_cors import CORS
 from datetime import datetime
+import zoneinfo
 
 app = Flask(__name__)
 CORS(app)
@@ -19,12 +20,15 @@ client_sessions = {}  # key -> {"first_request": datetime}
 # Login detection storage
 login_sessions = {}  # mobile_number -> {"timestamp": datetime}
 
+# Timezone
+IST = zoneinfo.ZoneInfo("Asia/Kolkata")
+
 
 # =========================
 # Helpers
 # =========================
 def now_str():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
 
 # =========================
@@ -46,7 +50,7 @@ def receive_otp():
         entry = {
             "otp": otp,
             "token": token,
-            "timestamp": datetime.now()
+            "timestamp": datetime.now(IST)
         }
 
         if vehicle:
@@ -76,7 +80,7 @@ def get_latest_otp():
 
     key = (token, sim_number if sim_number else vehicle)
     if key not in client_sessions:
-        client_sessions[key] = {"first_request": datetime.now()}
+        client_sessions[key] = {"first_request": datetime.now(IST)}
         print(f"[{now_str()}] 🖥️ Browser started polling for {key}")
     session_time = client_sessions[key]["first_request"]
 
@@ -145,7 +149,7 @@ def login_detect():
         if not mobile_number:
             return jsonify({"status": "error", "message": "mobile_number required"}), 400
 
-        login_sessions[mobile_number] = {"timestamp": datetime.now()}
+        login_sessions[mobile_number] = {"timestamp": datetime.now(IST)}
         print(f"[{now_str()}] 🔑 Login detected for mobile: {mobile_number}")
         return jsonify({"status": "success", "message": "Login detected"}), 200
 
@@ -174,84 +178,55 @@ def login_found():
 
 
 # =========================
-# Login Management Page
+# Login Management HTML Page
 # =========================
-@app.route('/api/login-clear', methods=['GET', 'POST'])
-def login_clear():
-    try:
-        msg = None
-        if request.method == 'POST':
-            action = request.form.get("action")
-            if action == "delete_selected":
-                selected = request.form.getlist("mobiles")
-                for m in selected:
-                    login_sessions.pop(m, None)
-                msg = f"Deleted {len(selected)} mobile(s)"
-            elif action == "delete_all":
-                login_sessions.clear()
-                msg = "Deleted all mobiles"
-            else:
-                msg = "No action taken"
 
-        rows = ""
-        for mobile, info in login_sessions.items():
-            ts = info["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
-            rows += f"""
-              <tr>
-                <td><input type="checkbox" name="mobiles" value="{mobile}"></td>
-                <td>{mobile}</td>
-                <td>{ts}</td>
-              </tr>
-            """
+@app.route('/manage-logins', methods=['GET', 'POST'])
+def manage_logins():
+    if request.method == 'POST':
+        if "delete_selected" in request.form:
+            to_delete = request.form.getlist("mobiles")
+            for m in to_delete:
+                login_sessions.pop(m, None)
+            print(f"[{now_str()}] 🗑️ Deleted selected mobiles: {to_delete}")
+        elif "delete_all" in request.form:
+            login_sessions.clear()
+            print(f"[{now_str()}] 🧹 Cleared all stored login detections")
+        return redirect(url_for('manage_logins'))
 
-        html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>Login Sessions</title>
-          <style>
+    rows = "".join(
+        f"<tr><td><input type='checkbox' name='mobiles' value='{m}'></td><td>{m}</td><td>{info['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}</td></tr>"
+        for m, info in login_sessions.items()
+    )
+
+    html = f"""
+    <html>
+    <head>
+        <title>Manage Logins</title>
+        <style>
             body {{ font-family: Arial, sans-serif; margin: 20px; }}
             table {{ border-collapse: collapse; width: 100%; }}
             th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; }}
-            th {{ background: #f0f0f0; }}
-            .actions {{ margin-top: 15px; }}
-            .msg {{ margin: 10px 0; color: green; }}
-          </style>
-        </head>
-        <body>
-          <h2>Stored Login Sessions</h2>
-          {f"<div class='msg'>{msg}</div>" if msg else ""}
-          <form method="POST">
+            th {{ background: #f4f4f4; }}
+            .actions {{ margin-top: 10px; }}
+        </style>
+    </head>
+    <body>
+        <h2>Login Sessions</h2>
+        <form method="POST">
             <table>
-              <thead>
-                <tr>
-                  <th><input type="checkbox" id="checkAll"></th>
-                  <th>Mobile Number</th>
-                  <th>Timestamp</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows or "<tr><td colspan='3'>No logins found</td></tr>"}
-              </tbody>
+                <tr><th>Select</th><th>Mobile Number</th><th>Timestamp (IST)</th></tr>
+                {rows if rows else "<tr><td colspan='3'>No logins found</td></tr>"}
             </table>
             <div class="actions">
-              <button type="submit" name="action" value="delete_selected">Delete Selected</button>
-              <button type="submit" name="action" value="delete_all">Delete All</button>
+                <button type="submit" name="delete_selected">Delete Selected</button>
+                <button type="submit" name="delete_all">Delete All</button>
             </div>
-          </form>
-          <script>
-            document.getElementById("checkAll").addEventListener("change",function(e){{
-              document.querySelectorAll("input[name='mobiles']").forEach(cb=>cb.checked=e.target.checked);
-            }});
-          </script>
-        </body>
-        </html>
-        """
-        return html
-
-    except Exception as e:
-        print("Error in login-clear:", e)
-        return jsonify({"status": "error", "message": str(e)}), 400
+        </form>
+    </body>
+    </html>
+    """
+    return render_template_string(html)
 
 
 # =========================
