@@ -11,7 +11,7 @@ CORS(app)
 # =========================
 mobile_otps = []   # [{"otp":..., "token":..., "sim_number":..., "timestamp":...}]
 vehicle_otps = []  # [{"otp":..., "token":..., "vehicle":..., "timestamp":...}]
-otp_data = {}      # token -> list of delivered OTPs
+otp_data = {}      # token -> list of delivered OTPs (with browser_id)
 client_sessions = {}   # (token, sim_number/vehicle, browser_id) -> {"first_request": datetime}
 browser_queues = {}    # (token, sim_number/vehicle) -> [browser_id1, browser_id2, ...]
 login_sessions = {}    # mobile_number -> [ { "timestamp":..., "source":... }, ...]
@@ -104,6 +104,7 @@ def get_latest_otp():
         if new_otps and next_browser == browser_id:
             latest = new_otps[0]
             vehicle_otps.remove(latest)
+            latest["browser_id"] = browser_id  # include browser_id
             otp_data.setdefault(token, []).append(latest)
             pop_browser_from_queue(token, identifier)
             client_sessions.pop((token, identifier, browser_id), None)
@@ -111,6 +112,7 @@ def get_latest_otp():
                 "status": "success",
                 "otp": latest["otp"],
                 "vehicle": latest["vehicle"],
+                "browser_id": browser_id,
                 "timestamp": latest["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
             }), 200
         return jsonify({"status": "waiting"}), 200
@@ -126,6 +128,7 @@ def get_latest_otp():
         if new_otps and next_browser == browser_id:
             latest = new_otps[0]
             mobile_otps.remove(latest)
+            latest["browser_id"] = browser_id  # include browser_id
             otp_data.setdefault(token, []).append(latest)
             pop_browser_from_queue(token, identifier)
             client_sessions.pop((token, identifier, browser_id), None)
@@ -133,6 +136,7 @@ def get_latest_otp():
                 "status": "success",
                 "otp": latest["otp"],
                 "sim_number": latest["sim_number"],
+                "browser_id": browser_id,
                 "timestamp": latest["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
             }), 200
         return jsonify({"status": "waiting"}), 200
@@ -185,6 +189,7 @@ def status():
                 <td>{e.get('sim_number','')}</td>
                 <td>{e.get('vehicle','')}</td>
                 <td>{e.get('otp','')}</td>
+                <td>{e.get('browser_id','')}</td>
                 <td>{e['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}</td>
             </tr>
             """
@@ -246,8 +251,8 @@ def status():
                     <h3>OTP Data</h3>
                     <form method="POST">
                         <table>
-                            <tr><th>Select</th><th>TOKEN</th><th>MOBILE NUMBER</th><th>VEHICLE</th><th>OTP</th><th>DATE</th></tr>
-                            {otp_rows if otp_rows else '<tr><td colspan="6">No OTPs found</td></tr>'}
+                            <tr><th>Select</th><th>TOKEN</th><th>MOBILE NUMBER</th><th>VEHICLE</th><th>OTP</th><th>BROWSER ID</th><th>DATE</th></tr>
+                            {otp_rows if otp_rows else '<tr><td colspan="7">No OTPs found</td></tr>'}
                         </table>
                         <button type="submit" name="delete_selected_otps">Delete Selected</button>
                         <button type="submit" name="delete_all_otps">Delete All</button>
