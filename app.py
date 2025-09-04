@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template_string, redirect, url_for
+from flask import Flask, request, jsonify, redirect, url_for
 from flask_cors import CORS
 from datetime import datetime
 import zoneinfo
@@ -11,9 +11,10 @@ CORS(app)
 # =========================
 mobile_otps = []   # [{"otp":..., "token":..., "sim_number":..., "timestamp":...}]
 vehicle_otps = []  # [{"otp":..., "token":..., "vehicle":..., "timestamp":...}]
-otp_data = {}      # token -> list of OTPs
-client_sessions = {}  # (token, sim_number/vehicle) -> {"first_request": datetime}
-login_sessions = {}   # mobile_number -> [ { "timestamp":..., "source":... }, ...]
+otp_data = {}      # token -> list of delivered OTPs
+client_sessions = {}   # (token, sim_number/vehicle, browser_id) -> {"first_request": datetime}
+browser_queues = {}    # (token, sim_number/vehicle) -> [browser_id1, browser_id2, ...]
+login_sessions = {}    # mobile_number -> [ { "timestamp":..., "source":... }, ...]
 
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 
@@ -22,6 +23,25 @@ IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 # =========================
 def now_str():
     return datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+
+def add_browser_to_queue(token, identifier, browser_id):
+    key = (token, identifier)
+    if key not in browser_queues:
+        browser_queues[key] = []
+    if browser_id not in browser_queues[key]:
+        browser_queues[key].append(browser_id)
+        client_sessions[(token, identifier, browser_id)] = {"first_request": datetime.now(IST)}
+
+def get_next_browser(token, identifier):
+    key = (token, identifier)
+    if key in browser_queues and browser_queues[key]:
+        return browser_queues[key][0]
+    return None
+
+def pop_browser_from_queue(token, identifier):
+    key = (token, identifier)
+    if key in browser_queues and browser_queues[key]:
+        browser_queues[key].pop(0)
 
 # =========================
 # OTP Endpoints
@@ -62,34 +82,60 @@ def get_latest_otp():
     token = (request.args.get('token') or "").strip()
     sim_number = (request.args.get('sim_number') or "").strip().upper()
     vehicle = (request.args.get('vehicle') or "").strip().upper()
+    browser_id = (request.args.get('browser_id') or "").strip()
 
-    if not token or (not sim_number and not vehicle):
-        return jsonify({"status": "error", "message": "token + sim_number OR token + vehicle required"}), 400
+    if not token or (not sim_number and not vehicle) or not browser_id:
+        return jsonify({"status": "error", "message": "token + sim_number/vehicle + browser_id required"}), 400
 
-    key = (token, sim_number if sim_number else vehicle)
-    if key not in client_sessions:
-        client_sessions[key] = {"first_request": datetime.now(IST)}
-    session_time = client_sessions[key]["first_request"]
+    identifier = sim_number if sim_number else vehicle
+    add_browser_to_queue(token, identifier, browser_id)
 
+    session_time = client_sessions[(token, identifier, browser_id)]["first_request"]
+    next_browser = get_next_browser(token, identifier)
+
+    # Vehicle OTPs
     if vehicle:
-        new_otps = [o for o in vehicle_otps if o["token"] == token and o.get("vehicle","").upper() == vehicle and o["timestamp"] > session_time]
-        if new_otps:
-            latest = new_otps[-1]
-            vehicle_otps[:] = [o for o in vehicle_otps if not (o["token"] == token and o.get("vehicle","").upper() == vehicle)]
-            client_sessions.pop(key, None)
+        new_otps = [
+            o for o in vehicle_otps
+            if o["token"] == token
+            and o.get("vehicle", "").upper() == vehicle
+            and o["timestamp"] > session_time
+        ]
+        if new_otps and next_browser == browser_id:
+            latest = new_otps[0]
+            vehicle_otps.remove(latest)
             otp_data.setdefault(token, []).append(latest)
-            return jsonify({"status":"success","otp":latest["otp"],"vehicle":latest["vehicle"],"timestamp":latest["timestamp"].strftime("%Y-%m-%d %H:%M:%S")}),200
-        return jsonify({"status":"empty","message":"No new vehicle OTP"}),200
-    else:
-        new_otps = [o for o in mobile_otps if o["token"]==token and o.get("sim_number","").upper()==sim_number and o["timestamp"]>session_time]
-        if new_otps:
-            latest = new_otps[-1]
-            mobile_otps[:] = [o for o in mobile_otps if not (o["token"]==token and o.get("sim_number","").upper()==sim_number)]
-            client_sessions.pop(key, None)
-            otp_data.setdefault(token, []).append(latest)
-            return jsonify({"status":"success","otp":latest["otp"],"sim_number":latest["sim_number"],"timestamp":latest["timestamp"].strftime("%Y-%m-%d %H:%M:%S")}),200
-        return jsonify({"status":"empty","message":"No new mobile OTP"}),200
+            pop_browser_from_queue(token, identifier)
+            client_sessions.pop((token, identifier, browser_id), None)
+            return jsonify({
+                "status": "success",
+                "otp": latest["otp"],
+                "vehicle": latest["vehicle"],
+                "timestamp": latest["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+            }), 200
+        return jsonify({"status": "waiting"}), 200
 
+    # Mobile OTPs
+    else:
+        new_otps = [
+            o for o in mobile_otps
+            if o["token"] == token
+            and o.get("sim_number", "").upper() == sim_number
+            and o["timestamp"] > session_time
+        ]
+        if new_otps and next_browser == browser_id:
+            latest = new_otps[0]
+            mobile_otps.remove(latest)
+            otp_data.setdefault(token, []).append(latest)
+            pop_browser_from_queue(token, identifier)
+            client_sessions.pop((token, identifier, browser_id), None)
+            return jsonify({
+                "status": "success",
+                "otp": latest["otp"],
+                "sim_number": latest["sim_number"],
+                "timestamp": latest["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+            }), 200
+        return jsonify({"status": "waiting"}), 200
 
 # =========================
 # Status / Dashboard
@@ -225,7 +271,6 @@ def status():
     """
     return html
 
-
 # =========================
 # Login Detection API
 # =========================
@@ -260,7 +305,6 @@ def login_found():
         return jsonify({"status": "found", "mobile_number": mobile_number, "detections": detections}), 200
     else:
         return jsonify({"status": "not_found", "mobile_number": mobile_number}), 200
-
 
 # =========================
 # Run App
