@@ -1,57 +1,269 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string, redirect, url_for
 from flask_cors import CORS
-import threading
+from datetime import datetime
+import zoneinfo
 
 app = Flask(__name__)
 CORS(app)
 
-lock = threading.Lock()
+# =========================
+# Storage
+# =========================
+mobile_otps = []   # [{"otp":..., "token":..., "sim_number":..., "timestamp":...}]
+vehicle_otps = []  # [{"otp":..., "token":..., "vehicle":..., "timestamp":...}]
+otp_data = {}      # token -> list of OTPs
+client_sessions = {}  # (token, sim_number/vehicle) -> {"first_request": datetime}
+login_sessions = {}   # mobile_number -> {"timestamp": datetime}
 
-# Shared in-memory store
-assignments = {}   # Tracks assigned count per targetName
-stored_presets = {}  # Stores presets uploaded
+IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 
-# Endpoint to store presets and reset assignments
-@app.route('/set-presets', methods=['POST'])
-def set_presets():
-    global stored_presets, assignments
-    data = request.get_json()
+# =========================
+# Helpers
+# =========================
+def now_str():
+    return datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
-    if not isinstance(data, dict):
-        return jsonify({"error": "Invalid presets format"}), 400
+# =========================
+# OTP Endpoints
+# =========================
+@app.route('/api/receive-otp', methods=['POST'])
+def receive_otp():
+    try:
+        data = request.get_json(force=True)
+        otp = (data.get('otp') or "").strip()
+        sim_number = (data.get('sim_number') or "").strip().upper()
+        token = (data.get('token') or "").strip()
+        vehicle = (data.get('vehicle') or "").strip().upper()
 
-    with lock:
-        stored_presets = data
-        assignments = {}  # Reset assignments when presets are updated
+        if not otp or not token:
+            return jsonify({"status": "error", "message": "OTP and token required"}), 400
 
-    return jsonify({"message": "Presets stored and assignments reset."}), 200
+        entry = {
+            "otp": otp,
+            "token": token,
+            "timestamp": datetime.now(IST)
+        }
 
-# Endpoint to assign vehicle
-@app.route('/assign-vehicle', methods=['POST'])
-def assign_vehicle():
-    global stored_presets, assignments
-    data = request.get_json()
-    target_name = data.get("targetName")
-
-    if not target_name:
-        return jsonify({"error": "Missing 'targetName'"}), 400
-
-    with lock:
-        vehicle_list = stored_presets.get(target_name)
-        if not vehicle_list:
-            return jsonify({"vehicle_number": None})  # No vehicles mapped
-
-        count = assignments.get(target_name, 0)
-
-        if count < len(vehicle_list):
-            assigned_vehicle = vehicle_list[count]
+        if vehicle:
+            entry["vehicle"] = vehicle
+            vehicle_otps.append(entry)
         else:
-            assigned_vehicle = None  # No more vehicles left
+            entry["sim_number"] = sim_number or "UNKNOWNSIM"
+            mobile_otps.append(entry)
 
-        assignments[target_name] = count + 1
+        return jsonify({"status": "success", "message": "OTP stored"}), 200
+    except Exception as e:
+        print("Error receiving from app:", e)
+        return jsonify({"status": "error", "message": str(e)}), 400
 
-    return jsonify({"vehicle_number": assigned_vehicle})
+@app.route('/api/get-latest-otp', methods=['GET'])
+def get_latest_otp():
+    token = (request.args.get('token') or "").strip()
+    sim_number = (request.args.get('sim_number') or "").strip().upper()
+    vehicle = (request.args.get('vehicle') or "").strip().upper()
 
-# Run the app locally
+    if not token or (not sim_number and not vehicle):
+        return jsonify({"status": "error", "message": "token + sim_number OR token + vehicle required"}), 400
+
+    key = (token, sim_number if sim_number else vehicle)
+    if key not in client_sessions:
+        client_sessions[key] = {"first_request": datetime.now(IST)}
+    session_time = client_sessions[key]["first_request"]
+
+    if vehicle:
+        new_otps = [o for o in vehicle_otps if o["token"] == token and o.get("vehicle","").upper() == vehicle and o["timestamp"] > session_time]
+        if new_otps:
+            latest = new_otps[-1]
+            vehicle_otps[:] = [o for o in vehicle_otps if not (o["token"] == token and o.get("vehicle","").upper() == vehicle)]
+            client_sessions.pop(key, None)
+            # move to otp_data
+            otp_data.setdefault(token, []).append(latest)
+            return jsonify({"status":"success","otp":latest["otp"],"vehicle":latest["vehicle"],"timestamp":latest["timestamp"].strftime("%Y-%m-%d %H:%M:%S")}),200
+        return jsonify({"status":"empty","message":"No new vehicle OTP"}),200
+    else:
+        new_otps = [o for o in mobile_otps if o["token"]==token and o.get("sim_number","").upper()==sim_number and o["timestamp"]>session_time]
+        if new_otps:
+            latest = new_otps[-1]
+            mobile_otps[:] = [o for o in mobile_otps if not (o["token"]==token and o.get("sim_number","").upper()==sim_number)]
+            client_sessions.pop(key, None)
+            # move to otp_data
+            otp_data.setdefault(token, []).append(latest)
+            return jsonify({"status":"success","otp":latest["otp"],"sim_number":latest["sim_number"],"timestamp":latest["timestamp"].strftime("%Y-%m-%d %H:%M:%S")}),200
+        return jsonify({"status":"empty","message":"No new mobile OTP"}),200
+
+# =========================
+# Status / Dashboard
+# =========================
+@app.route('/api/status', methods=['GET', 'POST'])
+def status():
+    global otp_data, login_sessions
+
+    # Handle POST for deletions
+    if request.method == 'POST':
+        if "delete_selected_otps" in request.form:
+            tokens_to_delete = request.form.getlist("otp_rows")
+            for t, idx in (x.split(":") for x in tokens_to_delete):
+                idx = int(idx)
+                if t in otp_data and 0 <= idx < len(otp_data[t]):
+                    otp_data[t].pop(idx)
+                    if not otp_data[t]:
+                        otp_data.pop(t)
+            return redirect(url_for('status'))
+
+        elif "delete_all_otps" in request.form:
+            otp_data.clear()
+            return redirect(url_for('status'))
+
+        elif "delete_selected_logins" in request.form:
+            logins_to_delete = request.form.getlist("login_rows")
+            for m in logins_to_delete:
+                login_sessions.pop(m, None)
+            return redirect(url_for('status'))
+
+        elif "delete_all_logins" in request.form:
+            login_sessions.clear()
+            return redirect(url_for('status'))
+
+    # Prepare OTP table rows
+    otp_rows = ""
+    for t, entries in otp_data.items():
+        for i, e in enumerate(entries):
+            otp_rows += f"""
+            <tr>
+                <td><input type='checkbox' name='otp_rows' value='{t}:{i}'></td>
+                <td>{t}</td>
+                <td>{e.get('sim_number','')}</td>
+                <td>{e.get('vehicle','')}</td>
+                <td>{e.get('otp','')}</td>
+                <td>{e['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}</td>
+            </tr>
+            """
+
+    # Prepare Login table rows
+    login_rows = ""
+    for m, info in login_sessions.items():
+        login_rows += f"""
+        <tr>
+            <td><input type='checkbox' name='login_rows' value='{m}'></td>
+            <td>{m}</td>
+            <td>{info['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}</td>
+        </tr>
+        """
+
+    html = f"""
+    <html>
+    <head>
+        <title>KM OTP Dashboard</title>
+        <style>
+            body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background:#f9f9f9; margin:0; padding:0; }}
+            h2 {{ margin-bottom: 20px; text-align:center; color:#333; }}
+            .container {{ display:flex; min-height:100vh; }}
+            .sidebar {{ width:220px; background:#2C3E50; padding:20px; box-shadow:2px 0 5px rgba(0,0,0,0.1); }}
+            .sidebar button {{ margin-bottom:15px; display:block; width:100%; padding:10px; border:none; background:#3498DB; color:white; font-weight:bold; cursor:pointer; border-radius:5px; transition:0.3s; }}
+            .sidebar button:hover {{ background:#2980B9; }}
+            .content {{ flex-grow:1; padding:30px; }}
+            table {{ border-collapse: collapse; width:100%; background:white; border-radius:5px; overflow:hidden; box-shadow:0 2px 5px rgba(0,0,0,0.1); }}
+            th, td {{ border-bottom:1px solid #ddd; padding:10px; text-align:left; }}
+            th {{ background:#2980B9; color:white; }}
+            tr:hover {{ background:#f1f1f1; }}
+            button.submit-btn {{ background:#E74C3C; color:white; border:none; padding:10px 15px; border-radius:5px; cursor:pointer; margin-top:10px; margin-right:10px; }}
+            button.submit-btn:hover {{ background:#C0392B; }}
+        </style>
+        <script>
+            function showSection(id){{
+                window.location.href = window.location.pathname + "?section=" + id;
+            }}
+
+            window.onload = function(){{
+                const params = new URLSearchParams(window.location.search);
+                const section = params.get('section');
+                if(section){{
+                    document.getElementById('otp_section').style.display = section=='otp_section'?'block':'none';
+                    document.getElementById('login_section').style.display = section=='login_section'?'block':'none';
+                }} else {{
+                    document.getElementById('otp_section').style.display = 'block';
+                    document.getElementById('login_section').style.display = 'none';
+                }}
+            }}
+        </script>
+    </head>
+    <body>
+        <h2>KM OTP Dashboard</h2>
+        <div class="container">
+            <div class="sidebar">
+                <button onclick="showSection('otp_section')">OTP DATA</button>
+                <button onclick="showSection('login_section')">CLEAR LOGIN IDS</button>
+            </div>
+            <div class="content">
+                <div id="otp_section" style="display:none;">
+                    <h3>OTP Data</h3>
+                    <form method="POST">
+                        <table>
+                            <tr>
+                                <th>Select</th>
+                                <th>TOKEN</th>
+                                <th>MOBILE NUMBER</th>
+                                <th>VEHICLE</th>
+                                <th>OTP</th>
+                                <th>DATE</th>
+                            </tr>
+                            {otp_rows if otp_rows else '<tr><td colspan="6">No OTPs found</td></tr>'}
+                        </table>
+                        <button type="submit" name="delete_selected_otps" class="submit-btn">Delete Selected</button>
+                        <button type="submit" name="delete_all_otps" class="submit-btn">Delete All</button>
+                    </form>
+                </div>
+                <div id="login_section" style="display:none;">
+                    <h3>Login IDs</h3>
+                    <form method="POST">
+                        <table>
+                            <tr>
+                                <th>Select</th>
+                                <th>MOBILE NUMBER</th>
+                                <th>DATE</th>
+                            </tr>
+                            {login_rows if login_rows else '<tr><td colspan="3">No login sessions found</td></tr>'}
+                        </table>
+                        <button type="submit" name="delete_selected_logins" class="submit-btn">Delete Selected</button>
+                        <button type="submit" name="delete_all_logins" class="submit-btn">Delete All</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    return html
+
+
+# =========================
+# Login Detection
+# =========================
+@app.route('/api/login-detect', methods=['POST'])
+def login_detect():
+    try:
+        data = request.get_json(force=True)
+        mobile_number = (data.get('mobile_number') or "").strip().upper()
+        if not mobile_number:
+            return jsonify({"status": "error", "message": "mobile_number required"}), 400
+        login_sessions[mobile_number] = {"timestamp": datetime.now(IST)}
+        return jsonify({"status": "success", "message": "Login detected"}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+@app.route('/api/login-found', methods=['GET'])
+def login_found():
+    mobile_number = (request.args.get('mobile_number') or "").strip().upper()
+    if not mobile_number:
+        return jsonify({"status": "error", "message": "mobile_number required"}), 400
+    if mobile_number in login_sessions:
+        ts = login_sessions[mobile_number]["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+        return jsonify({"status": "found", "mobile_number": mobile_number, "timestamp": ts}), 200
+    else:
+        return jsonify({"status": "not_found", "mobile_number": mobile_number}), 200
+
+# =========================
+# Run App
+# =========================
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5001)
+    app.run(debug=True)
