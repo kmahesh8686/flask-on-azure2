@@ -1,318 +1,57 @@
-from flask import Flask, request, jsonify, redirect, url_for
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-from datetime import datetime
-import zoneinfo
+import threading
 
 app = Flask(__name__)
 CORS(app)
 
-# =========================
-# Storage
-# =========================
-mobile_otps = []   # [{"otp":..., "token":..., "sim_number":..., "timestamp":...}]
-vehicle_otps = []  # [{"otp":..., "token":..., "vehicle":..., "timestamp":...}]
-otp_data = {}      # token -> list of delivered OTPs (with browser_id)
-client_sessions = {}   # (token, sim_number/vehicle, browser_id) -> {"first_request": datetime}
-browser_queues = {}    # (token, sim_number/vehicle) -> [browser_id1, browser_id2, ...]
-login_sessions = {}    # mobile_number -> [ { "timestamp":..., "source":... }, ...]
+lock = threading.Lock()
 
-IST = zoneinfo.ZoneInfo("Asia/Kolkata")
+# Shared in-memory store
+assignments = {}   # Tracks assigned count per targetName
+stored_presets = {}  # Stores presets uploaded
 
-# =========================
-# Helpers
-# =========================
-def now_str():
-    return datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+# Endpoint to store presets and reset assignments
+@app.route('/set-presets', methods=['POST'])
+def set_presets():
+    global stored_presets, assignments
+    data = request.get_json()
 
-def add_browser_to_queue(token, identifier, browser_id):
-    key = (token, identifier)
-    if key not in browser_queues:
-        browser_queues[key] = []
-    if browser_id not in browser_queues[key]:
-        browser_queues[key].append(browser_id)
-        client_sessions[(token, identifier, browser_id)] = {"first_request": datetime.now(IST)}
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid presets format"}), 400
 
-def get_next_browser(token, identifier):
-    key = (token, identifier)
-    if key in browser_queues and browser_queues[key]:
-        return browser_queues[key][0]
-    return None
+    with lock:
+        stored_presets = data
+        assignments = {}  # Reset assignments when presets are updated
 
-def pop_browser_from_queue(token, identifier):
-    key = (token, identifier)
-    if key in browser_queues and browser_queues[key]:
-        browser_queues[key].pop(0)
+    return jsonify({"message": "Presets stored and assignments reset."}), 200
 
-# =========================
-# OTP Endpoints
-# =========================
-@app.route('/api/receive-otp', methods=['POST'])
-def receive_otp():
-    try:
-        data = request.get_json(force=True)
-        otp = (data.get('otp') or "").strip()
-        sim_number = (data.get('sim_number') or "").strip().upper()
-        token = (data.get('token') or "").strip()
-        vehicle = (data.get('vehicle') or "").strip().upper()
+# Endpoint to assign vehicle
+@app.route('/assign-vehicle', methods=['POST'])
+def assign_vehicle():
+    global stored_presets, assignments
+    data = request.get_json()
+    target_name = data.get("targetName")
 
-        if not otp or not token:
-            return jsonify({"status": "error", "message": "OTP and token required"}), 400
+    if not target_name:
+        return jsonify({"error": "Missing 'targetName'"}), 400
 
-        entry = {
-            "otp": otp,
-            "token": token,
-            "timestamp": datetime.now(IST)
-        }
+    with lock:
+        vehicle_list = stored_presets.get(target_name)
+        if not vehicle_list:
+            return jsonify({"vehicle_number": None})  # No vehicles mapped
 
-        if vehicle:
-            entry["vehicle"] = vehicle
-            vehicle_otps.append(entry)
+        count = assignments.get(target_name, 0)
+
+        if count < len(vehicle_list):
+            assigned_vehicle = vehicle_list[count]
         else:
-            entry["sim_number"] = sim_number or "UNKNOWNSIM"
-            mobile_otps.append(entry)
+            assigned_vehicle = None  # No more vehicles left
 
-        return jsonify({"status": "success", "message": "OTP stored"}), 200
-    except Exception as e:
-        print("Error receiving from app:", e)
-        return jsonify({"status": "error", "message": str(e)}), 400
+        assignments[target_name] = count + 1
 
+    return jsonify({"vehicle_number": assigned_vehicle})
 
-@app.route('/api/get-latest-otp', methods=['GET'])
-def get_latest_otp():
-    token = (request.args.get('token') or "").strip()
-    sim_number = (request.args.get('sim_number') or "").strip().upper()
-    vehicle = (request.args.get('vehicle') or "").strip().upper()
-    browser_id = (request.args.get('browser_id') or "").strip()
-
-    if not token or (not sim_number and not vehicle) or not browser_id:
-        return jsonify({"status": "error", "message": "token + sim_number/vehicle + browser_id required"}), 400
-
-    identifier = sim_number if sim_number else vehicle
-    add_browser_to_queue(token, identifier, browser_id)
-
-    session_time = client_sessions[(token, identifier, browser_id)]["first_request"]
-    next_browser = get_next_browser(token, identifier)
-
-    # Vehicle OTPs
-    if vehicle:
-        new_otps = [
-            o for o in vehicle_otps
-            if o["token"] == token
-            and o.get("vehicle", "").upper() == vehicle
-            and o["timestamp"] > session_time
-        ]
-        if new_otps and next_browser == browser_id:
-            latest = new_otps[0]
-            vehicle_otps.remove(latest)
-            latest["browser_id"] = browser_id  # include browser_id
-            otp_data.setdefault(token, []).append(latest)
-            pop_browser_from_queue(token, identifier)
-            client_sessions.pop((token, identifier, browser_id), None)
-            return jsonify({
-                "status": "success",
-                "otp": latest["otp"],
-                "vehicle": latest["vehicle"],
-                "browser_id": browser_id,
-                "timestamp": latest["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
-            }), 200
-        return jsonify({"status": "waiting"}), 200
-
-    # Mobile OTPs
-    else:
-        new_otps = [
-            o for o in mobile_otps
-            if o["token"] == token
-            and o.get("sim_number", "").upper() == sim_number
-            and o["timestamp"] > session_time
-        ]
-        if new_otps and next_browser == browser_id:
-            latest = new_otps[0]
-            mobile_otps.remove(latest)
-            latest["browser_id"] = browser_id  # include browser_id
-            otp_data.setdefault(token, []).append(latest)
-            pop_browser_from_queue(token, identifier)
-            client_sessions.pop((token, identifier, browser_id), None)
-            return jsonify({
-                "status": "success",
-                "otp": latest["otp"],
-                "sim_number": latest["sim_number"],
-                "browser_id": browser_id,
-                "timestamp": latest["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
-            }), 200
-        return jsonify({"status": "waiting"}), 200
-
-# =========================
-# Status / Dashboard
-# =========================
-@app.route('/api/status', methods=['GET', 'POST'])
-def status():
-    global otp_data, login_sessions
-
-    if request.method == 'POST':
-        if "delete_selected_otps" in request.form:
-            tokens_to_delete = request.form.getlist("otp_rows")
-            for t, idx in (x.split(":") for x in tokens_to_delete):
-                idx = int(idx)
-                if t in otp_data and 0 <= idx < len(otp_data[t]):
-                    otp_data[t].pop(idx)
-                    if not otp_data[t]:
-                        otp_data.pop(t)
-            return redirect(url_for('status'))
-
-        elif "delete_all_otps" in request.form:
-            otp_data.clear()
-            return redirect(url_for('status'))
-
-        elif "delete_selected_logins" in request.form:
-            logins_to_delete = request.form.getlist("login_rows")
-            for x in logins_to_delete:
-                m, idx = x.split(":")
-                idx = int(idx)
-                if m in login_sessions and 0 <= idx < len(login_sessions[m]):
-                    login_sessions[m].pop(idx)
-                    if not login_sessions[m]:
-                        login_sessions.pop(m)
-            return redirect(url_for('status'))
-
-        elif "delete_all_logins" in request.form:
-            login_sessions.clear()
-            return redirect(url_for('status'))
-
-    # OTP table
-    otp_rows = ""
-    for t, entries in otp_data.items():
-        for i, e in enumerate(entries):
-            otp_rows += f"""
-            <tr>
-                <td><input type='checkbox' name='otp_rows' value='{t}:{i}'></td>
-                <td>{t}</td>
-                <td>{e.get('sim_number','')}</td>
-                <td>{e.get('vehicle','')}</td>
-                <td>{e.get('otp','')}</td>
-                <td>{e.get('browser_id','')}</td>
-                <td>{e['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}</td>
-            </tr>
-            """
-
-    # Login table
-    login_rows = ""
-    for m, entries in login_sessions.items():
-        for i, e in enumerate(entries):
-            login_rows += f"""
-            <tr>
-                <td><input type='checkbox' name='login_rows' value='{m}:{i}'></td>
-                <td>{m}</td>
-                <td>{e['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}</td>
-                <td>{e.get('source','')}</td>
-            </tr>
-            """
-
-    html = f"""
-    <html>
-    <head>
-        <title>KM OTP Dashboard</title>
-        <style>
-            body {{ font-family: 'Segoe UI', sans-serif; background:#f9f9f9; margin:0; }}
-            h2 {{ margin:20px 0; text-align:center; }}
-            .container {{ display:flex; min-height:100vh; }}
-            .sidebar {{ width:220px; background:#2C3E50; padding:20px; color:white; }}
-            .sidebar button {{ margin-bottom:15px; width:100%; padding:10px; border:none; background:#3498DB; color:white; cursor:pointer; border-radius:5px; }}
-            .content {{ flex-grow:1; padding:30px; }}
-            table {{ border-collapse: collapse; width:100%; background:white; }}
-            th, td {{ border:1px solid #ddd; padding:8px; }}
-            th {{ background:#2980B9; color:white; }}
-        </style>
-        <script>
-            function showSection(id){{
-                window.location.href = window.location.pathname + "?section=" + id;
-            }}
-            window.onload = function(){{
-                const params = new URLSearchParams(window.location.search);
-                const section = params.get('section');
-                if(section){{
-                    document.getElementById('otp_section').style.display = section=='otp_section'?'block':'none';
-                    document.getElementById('login_section').style.display = section=='login_section'?'block':'none';
-                }} else {{
-                    document.getElementById('otp_section').style.display = 'block';
-                    document.getElementById('login_section').style.display = 'none';
-                }}
-            }}
-        </script>
-    </head>
-    <body>
-        <h2>KM OTP Dashboard</h2>
-        <div class="container">
-            <div class="sidebar">
-                <button onclick="showSection('otp_section')">OTP DATA</button>
-                <button onclick="showSection('login_section')">LOGIN DETECTIONS</button>
-            </div>
-            <div class="content">
-                <div id="otp_section" style="display:none;">
-                    <h3>OTP Data</h3>
-                    <form method="POST">
-                        <table>
-                            <tr><th>Select</th><th>TOKEN</th><th>MOBILE NUMBER</th><th>VEHICLE</th><th>OTP</th><th>BROWSER ID</th><th>DATE</th></tr>
-                            {otp_rows if otp_rows else '<tr><td colspan="7">No OTPs found</td></tr>'}
-                        </table>
-                        <button type="submit" name="delete_selected_otps">Delete Selected</button>
-                        <button type="submit" name="delete_all_otps">Delete All</button>
-                    </form>
-                </div>
-                <div id="login_section" style="display:none;">
-                    <h3>Login Detections</h3>
-                    <form method="POST">
-                        <table>
-                            <tr><th>Select</th><th>MOBILE</th><th>DATE</th><th>SOURCE</th></tr>
-                            {login_rows if login_rows else '<tr><td colspan="4">No login detections</td></tr>'}
-                        </table>
-                        <button type="submit" name="delete_selected_logins">Delete Selected</button>
-                        <button type="submit" name="delete_all_logins">Delete All</button>
-                    </form>
-                </div>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-    return html
-
-# =========================
-# Login Detection API
-# =========================
-@app.route('/api/login-detect', methods=['POST'])
-def login_detect():
-    try:
-        data = request.get_json(force=True)
-        mobile_number = (data.get('mobile_number') or "").strip().upper()
-        source = (data.get('source') or "").strip().upper()
-        if not mobile_number:
-            return jsonify({"status": "error", "message": "mobile_number required"}), 400
-
-        entry = {"timestamp": datetime.now(IST), "source": source}
-        login_sessions.setdefault(mobile_number, []).append(entry)
-
-        return jsonify({"status": "success", "message": "Login detected"}), 200
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 400
-
-
-@app.route('/api/login-found', methods=['GET'])
-def login_found():
-    mobile_number = (request.args.get('mobile_number') or "").strip().upper()
-    if not mobile_number:
-        return jsonify({"status": "error", "message": "mobile_number required"}), 400
-
-    if mobile_number in login_sessions:
-        detections = [
-            {"timestamp": e["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), "source": e.get("source","")}
-            for e in login_sessions[mobile_number]
-        ]
-        return jsonify({"status": "found", "mobile_number": mobile_number, "detections": detections}), 200
-    else:
-        return jsonify({"status": "not_found", "mobile_number": mobile_number}), 200
-
-# =========================
-# Run App
-# =========================
+# Run the app locally
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, host='0.0.0.0', port=5001)
