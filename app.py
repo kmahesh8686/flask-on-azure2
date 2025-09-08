@@ -15,7 +15,7 @@ vehicle_otps = []  # [{"otp":..., "token":..., "vehicle":..., "timestamp":..., "
 otp_data = {}      # token -> list of delivered OTPs (with browser_id & timestamp)
 client_sessions = {}   # (token, identifier, browser_id) -> {"first_request": datetime}
 browser_queues = {}    # (token, identifier) -> [browser_id1, browser_id2, ...]
-login_sessions = {}    # mobile_number -> [ { "timestamp":..., "source":... }, ...]
+login_sessions = {}    # mobile_number -> [ { "timestamp":..., "source":... }, ... ]
 
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 store_lock = threading.Lock()
@@ -29,14 +29,51 @@ def now():
 def now_str():
     return now().strftime("%Y-%m-%d %H:%M:%S")
 
+def purge_unsent_otps_for_token_and_identifier(token: str, identifier: str, cutoff_time: datetime):
+    """
+    Purge any unsent OTPs for the given (token + identifier) whose timestamp <= cutoff_time.
+    Identifier is either a SIM number (mobile) or a vehicle number.
+    """
+    t = (token or "").strip()
+    idu = (identifier or "").strip().upper()
+    with store_lock:
+        # Remove matching vehicle OTPs with timestamp <= cutoff_time
+        vehicle_otps[:] = [
+            o for o in vehicle_otps
+            if not (
+                o.get("token", "").strip() == t
+                and o.get("vehicle", "").upper() == idu
+                and o["timestamp"] <= cutoff_time
+            )
+        ]
+        # Remove matching mobile OTPs with timestamp <= cutoff_time
+        mobile_otps[:] = [
+            o for o in mobile_otps
+            if not (
+                o.get("token", "").strip() == t
+                and o.get("sim_number", "").upper() == idu
+                and o["timestamp"] <= cutoff_time
+            )
+        ]
+
 def add_browser_to_queue(token, identifier, browser_id):
+    """
+    Register browser in the queue and set its first_request to now().
+    Immediately purge any unsent OTPs for this token+identifier with timestamp <= first_request.
+    """
     key = (token, identifier)
+    cutoff = None
     with store_lock:
         if key not in browser_queues:
             browser_queues[key] = []
         if browser_id not in browser_queues[key]:
             browser_queues[key].append(browser_id)
             client_sessions[(token, identifier, browser_id)] = {"first_request": now()}
+            cutoff = client_sessions[(token, identifier, browser_id)]["first_request"]
+
+    # Purge outside/inside lock is okay because purge function manages its own lock.
+    if cutoff is not None:
+        purge_unsent_otps_for_token_and_identifier(token, identifier, cutoff)
 
 def get_next_browser(token, identifier):
     key = (token, identifier)
@@ -143,7 +180,7 @@ def get_latest_otp():
                 "status": "success",
                 "otp": latest["otp"],
                 "vehicle": latest.get("vehicle", ""),
-                "is_vehicle_otp": bool(latest.get("is_vehicle_otp", True)),
+                "is_vehicle_otp": True,
                 "browser_id": browser_id,
                 "timestamp": latest["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
             }), 200
@@ -172,7 +209,7 @@ def get_latest_otp():
                 "status": "success",
                 "otp": latest["otp"],
                 "sim_number": latest.get("sim_number", ""),
-                "is_vehicle_otp": bool(latest.get("is_vehicle_otp", False)),
+                "is_vehicle_otp": False,
                 "browser_id": browser_id,
                 "timestamp": latest["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
             }), 200
@@ -343,7 +380,7 @@ def login_found():
     with store_lock:
         if mobile_number in login_sessions:
             detections = [
-                {"timestamp": e["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), "source": e.get("source","")}
+                {"timestamp": e["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), "source": e.get('source',"")}
                 for e in login_sessions[mobile_number]
             ]
             return jsonify({"status": "found", "mobile_number": mobile_number, "detections": detections}), 200
