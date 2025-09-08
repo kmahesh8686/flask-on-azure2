@@ -31,13 +31,15 @@ def now_str():
 
 def purge_unsent_otps_for_token_and_identifier(token: str, identifier: str, cutoff_time: datetime):
     """
-    Purge any unsent OTPs for the given (token + identifier) whose timestamp <= cutoff_time.
+    Remove any stored mobile/vehicle OTPs for the given (token + identifier)
+    whose timestamp is <= cutoff_time.
     Identifier is either a SIM number (mobile) or a vehicle number.
     """
     t = (token or "").strip()
     idu = (identifier or "").strip().upper()
     with store_lock:
-        # Remove matching vehicle OTPs with timestamp <= cutoff_time
+        # Remove vehicle entries that match token + vehicle and are older or equal cutoff
+        vehicle_before = len(vehicle_otps)
         vehicle_otps[:] = [
             o for o in vehicle_otps
             if not (
@@ -46,7 +48,10 @@ def purge_unsent_otps_for_token_and_identifier(token: str, identifier: str, cuto
                 and o["timestamp"] <= cutoff_time
             )
         ]
-        # Remove matching mobile OTPs with timestamp <= cutoff_time
+        vehicle_after = len(vehicle_otps)
+
+        # Remove mobile entries that match token + sim_number and are older or equal cutoff
+        mobile_before = len(mobile_otps)
         mobile_otps[:] = [
             o for o in mobile_otps
             if not (
@@ -55,34 +60,45 @@ def purge_unsent_otps_for_token_and_identifier(token: str, identifier: str, cuto
                 and o["timestamp"] <= cutoff_time
             )
         ]
+        mobile_after = len(mobile_otps)
 
-def add_browser_to_queue(token, identifier, browser_id):
+    app.logger.debug(
+        f"purge_unsent: token={t} identifier={idu} cutoff={cutoff_time.strftime('%Y-%m-%d %H:%M:%S')} "
+        f"vehicle_removed={vehicle_before-vehicle_after} mobile_removed={mobile_before-mobile_after}"
+    )
+
+def add_browser_to_queue(token: str, identifier: str, browser_id: str):
     """
-    Register browser in the queue and set its first_request to now().
+    Register browser in the queue and set its first_request to now() (only when first added).
     Immediately purge any unsent OTPs for this token+identifier with timestamp <= first_request.
     """
     key = (token, identifier)
     cutoff = None
+    newly_added = False
+
     with store_lock:
         if key not in browser_queues:
             browser_queues[key] = []
         if browser_id not in browser_queues[key]:
             browser_queues[key].append(browser_id)
-            client_sessions[(token, identifier, browser_id)] = {"first_request": now()}
-            cutoff = client_sessions[(token, identifier, browser_id)]["first_request"]
+            # set first_request to now() for this browser session
+            cutoff = now()
+            client_sessions[(token, identifier, browser_id)] = {"first_request": cutoff}
+            newly_added = True
+            app.logger.debug(f"Browser added to queue: token={token} id={identifier} browser_id={browser_id} first_request={cutoff}")
 
-    # Purge outside/inside lock is okay because purge function manages its own lock.
-    if cutoff is not None:
+    # If we just added this browser, purge old OTPs for the same token+identifier
+    if newly_added and cutoff is not None:
         purge_unsent_otps_for_token_and_identifier(token, identifier, cutoff)
 
-def get_next_browser(token, identifier):
+def get_next_browser(token: str, identifier: str):
     key = (token, identifier)
     with store_lock:
         if key in browser_queues and browser_queues[key]:
             return browser_queues[key][0]
     return None
 
-def pop_browser_from_queue(token, identifier):
+def pop_browser_from_queue(token: str, identifier: str):
     key = (token, identifier)
     with store_lock:
         if key in browser_queues and browser_queues[key]:
@@ -116,7 +132,7 @@ def receive_otp():
         }
 
         with store_lock:
-            # Priority: vehicle text -> explicit vehicle flag -> mobile
+            # Priority: explicit vehicle text -> explicit vehicle flag -> mobile
             if vehicle:
                 entry["vehicle"] = vehicle
                 entry["is_vehicle_otp"] = True
@@ -133,6 +149,7 @@ def receive_otp():
                 mobile_otps.append(entry)
                 stored_as = "mobile"
 
+        app.logger.debug(f"receive_otp stored_as={stored_as} token={token} otp={otp} sim={sim_number} vehicle={vehicle} time={entry['timestamp']}")
         return jsonify({"status": "success", "message": "OTP stored", "stored_as": stored_as}), 200
     except Exception as e:
         app.logger.exception("receive_otp error")
@@ -151,11 +168,19 @@ def get_latest_otp():
     if not token or (not sim_number and not vehicle) or not browser_id:
         return jsonify({"status": "error", "message": "token + sim_number/vehicle + browser_id required"}), 400
 
+    # identifier is used for queueing and purging
     identifier = sim_number if sim_number else vehicle
+
+    # Add browser to queue (this sets first_request and purges old OTPs if this is first join)
     add_browser_to_queue(token, identifier, browser_id)
 
+    # retrieve the session first_request time (if present)
     session_key = (token, identifier, browser_id)
-    session_time = client_sessions.get(session_key, {}).get("first_request", now())
+    with store_lock:
+        session_time = client_sessions.get(session_key, {}).get("first_request", None)
+    if session_time is None:
+        session_time = now()
+
     next_browser = get_next_browser(token, identifier)
 
     # Vehicle OTPs path
@@ -163,7 +188,7 @@ def get_latest_otp():
         with store_lock:
             new_otps = [
                 o for o in vehicle_otps
-                if o["token"] == token
+                if o.get("token", "").strip() == token
                 and o.get("vehicle", "").upper() == vehicle
                 and o["timestamp"] > session_time
             ]
@@ -175,7 +200,9 @@ def get_latest_otp():
                 latest["browser_id"] = browser_id
                 otp_data.setdefault(token, []).append(latest)
             pop_browser_from_queue(token, identifier)
-            client_sessions.pop(session_key, None)
+            with store_lock:
+                client_sessions.pop(session_key, None)
+            app.logger.debug(f"delivering vehicle otp token={token} vehicle={vehicle} otp={latest['otp']}")
             return jsonify({
                 "status": "success",
                 "otp": latest["otp"],
@@ -192,7 +219,7 @@ def get_latest_otp():
         with store_lock:
             new_otps = [
                 o for o in mobile_otps
-                if o["token"] == token
+                if o.get("token", "").strip() == token
                 and o.get("sim_number", "").upper() == sim_number
                 and o["timestamp"] > session_time
             ]
@@ -204,7 +231,9 @@ def get_latest_otp():
                 latest["browser_id"] = browser_id
                 otp_data.setdefault(token, []).append(latest)
             pop_browser_from_queue(token, identifier)
-            client_sessions.pop(session_key, None)
+            with store_lock:
+                client_sessions.pop(session_key, None)
+            app.logger.debug(f"delivering mobile otp token={token} sim={sim_number} otp={latest['otp']}")
             return jsonify({
                 "status": "success",
                 "otp": latest["otp"],
@@ -217,7 +246,7 @@ def get_latest_otp():
             return jsonify({"status": "waiting"}), 200
 
 # =========================
-# Status / Dashboard (keeps your HTML layout)
+# Status / Dashboard (unchanged visual layout)
 # =========================
 @app.route('/api/status', methods=['GET', 'POST'])
 def status():
