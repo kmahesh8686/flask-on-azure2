@@ -3,6 +3,7 @@ from flask_cors import CORS
 from datetime import datetime
 import zoneinfo
 import threading
+import re
 
 app = Flask(__name__)
 CORS(app)
@@ -26,45 +27,115 @@ store_lock = threading.Lock()
 def now():
     return datetime.now(IST)
 
-def now_str():
-    return now().strftime("%Y-%m-%d %H:%M:%S")
+def normalize_token(t: str) -> str:
+    return (t or "").strip()
+
+def normalize_identifier(idv: str) -> str:
+    return (idv or "").strip().upper()
+
+def looks_like_vehicle(identifier: str) -> bool:
+    return bool(re.search(r"[A-Z]", identifier))   # contains any letter -> vehicle-like
+
+def looks_like_sim(identifier: str) -> bool:
+    return bool(re.fullmatch(r"\d{10}", identifier))  # exactly 10 digits -> sim
 
 def purge_unsent_otps_for_token_and_identifier(token: str, identifier: str, cutoff_time: datetime):
     """
     Remove any stored mobile/vehicle OTPs for the given (token + identifier)
-    whose timestamp is <= cutoff_time.
-    Identifier is either a SIM number (mobile) or a vehicle number.
+    whose timestamp is <= cutoff_time. Identifier is either a SIM number (mobile)
+    or a vehicle number. This purge ONLY touches OTPs for the same token and identifier.
     """
-    t = (token or "").strip()
-    idu = (identifier or "").strip().upper()
-    with store_lock:
-        # Remove vehicle entries that match token + vehicle and are older or equal cutoff
-        vehicle_before = len(vehicle_otps)
-        vehicle_otps[:] = [
-            o for o in vehicle_otps
-            if not (
-                o.get("token", "").strip() == t
-                and o.get("vehicle", "").upper() == idu
-                and o["timestamp"] <= cutoff_time
-            )
-        ]
-        vehicle_after = len(vehicle_otps)
+    t = normalize_token(token)
+    idu = normalize_identifier(identifier)
+    if not t or not idu:
+        return
 
-        # Remove mobile entries that match token + sim_number and are older or equal cutoff
-        mobile_before = len(mobile_otps)
-        mobile_otps[:] = [
-            o for o in mobile_otps
-            if not (
-                o.get("token", "").strip() == t
-                and o.get("sim_number", "").upper() == idu
-                and o["timestamp"] <= cutoff_time
-            )
-        ]
-        mobile_after = len(mobile_otps)
+    vehicle_removed = 0
+    mobile_removed = 0
+
+    with store_lock:
+        # If identifier looks like a vehicle, purge vehicle_otps whose token matches and
+        # whose vehicle equals identifier OR those flagged as vehicle OTPS with empty vehicle
+        # (some earlier app sends may have vehicle blank but flagged as vehicle OTP).
+        if looks_like_vehicle(idu):
+            before_v = len(vehicle_otps)
+            vehicle_otps[:] = [
+                o for o in vehicle_otps
+                if not (
+                    o.get("token", "").strip() == t
+                    and (
+                        (o.get("vehicle", "").upper() == idu)
+                        or (o.get("vehicle", "").strip() == "" and bool(o.get("is_vehicle_otp", False)))
+                    )
+                    and o["timestamp"] <= cutoff_time
+                )
+            ]
+            vehicle_removed = before_v - len(vehicle_otps)
+
+            # Also purge mobile_otps that accidentally used vehicle identifier as sim (defensive)
+            before_m = len(mobile_otps)
+            mobile_otps[:] = [
+                o for o in mobile_otps
+                if not (
+                    o.get("token", "").strip() == t
+                    and o.get("sim_number", "").upper() == idu
+                    and o["timestamp"] <= cutoff_time
+                )
+            ]
+            mobile_removed = before_m - len(mobile_otps)
+
+        # If identifier looks like a SIM, purge mobile_otps that match token+sim <= cutoff
+        elif looks_like_sim(idu):
+            before_m = len(mobile_otps)
+            mobile_otps[:] = [
+                o for o in mobile_otps
+                if not (
+                    o.get("token", "").strip() == t
+                    and o.get("sim_number", "").upper() == idu
+                    and o["timestamp"] <= cutoff_time
+                )
+            ]
+            mobile_removed = before_m - len(mobile_otps)
+
+            # Also purge vehicle entries where vehicle equals sim (unlikely but defensive)
+            before_v = len(vehicle_otps)
+            vehicle_otps[:] = [
+                o for o in vehicle_otps
+                if not (
+                    o.get("token", "").strip() == t
+                    and o.get("vehicle", "").upper() == idu
+                    and o["timestamp"] <= cutoff_time
+                )
+            ]
+            vehicle_removed = before_v - len(vehicle_otps)
+
+        # If identifier is neither distinctly sim nor vehicle (fallback) purge both types matching identifier
+        else:
+            before_v = len(vehicle_otps)
+            vehicle_otps[:] = [
+                o for o in vehicle_otps
+                if not (
+                    o.get("token", "").strip() == t
+                    and o.get("vehicle", "").upper() == idu
+                    and o["timestamp"] <= cutoff_time
+                )
+            ]
+            vehicle_removed = before_v - len(vehicle_otps)
+
+            before_m = len(mobile_otps)
+            mobile_otps[:] = [
+                o for o in mobile_otps
+                if not (
+                    o.get("token", "").strip() == t
+                    and o.get("sim_number", "").upper() == idu
+                    and o["timestamp"] <= cutoff_time
+                )
+            ]
+            mobile_removed = before_m - len(mobile_otps)
 
     app.logger.debug(
         f"purge_unsent: token={t} identifier={idu} cutoff={cutoff_time.strftime('%Y-%m-%d %H:%M:%S')} "
-        f"vehicle_removed={vehicle_before-vehicle_after} mobile_removed={mobile_before-mobile_after}"
+        f"vehicle_removed={vehicle_removed} mobile_removed={mobile_removed}"
     )
 
 def add_browser_to_queue(token: str, identifier: str, browser_id: str):
@@ -72,7 +143,7 @@ def add_browser_to_queue(token: str, identifier: str, browser_id: str):
     Register browser in the queue and set its first_request to now() (only when first added).
     Immediately purge any unsent OTPs for this token+identifier with timestamp <= first_request.
     """
-    key = (token, identifier)
+    key = (normalize_token(token), normalize_identifier(identifier))
     cutoff = None
     newly_added = False
 
@@ -81,25 +152,25 @@ def add_browser_to_queue(token: str, identifier: str, browser_id: str):
             browser_queues[key] = []
         if browser_id not in browser_queues[key]:
             browser_queues[key].append(browser_id)
-            # set first_request to now() for this browser session
             cutoff = now()
-            client_sessions[(token, identifier, browser_id)] = {"first_request": cutoff}
+            client_sessions[(key[0], key[1], browser_id)] = {"first_request": cutoff}
             newly_added = True
-            app.logger.debug(f"Browser added to queue: token={token} id={identifier} browser_id={browser_id} first_request={cutoff}")
+            app.logger.debug(f"Browser added to queue: token={key[0]} id={key[1]} browser_id={browser_id} first_request={cutoff}")
 
-    # If we just added this browser, purge old OTPs for the same token+identifier
+    # If we just added this browser, purge old OTPs for the same token+identifier (<= cutoff)
     if newly_added and cutoff is not None:
-        purge_unsent_otps_for_token_and_identifier(token, identifier, cutoff)
+        # Pass token and identifier in original form (function normalizes)
+        purge_unsent_otps_for_token_and_identifier(key[0], key[1], cutoff)
 
 def get_next_browser(token: str, identifier: str):
-    key = (token, identifier)
+    key = (normalize_token(token), normalize_identifier(identifier))
     with store_lock:
         if key in browser_queues and browser_queues[key]:
             return browser_queues[key][0]
     return None
 
 def pop_browser_from_queue(token: str, identifier: str):
-    key = (token, identifier)
+    key = (normalize_token(token), normalize_identifier(identifier))
     with store_lock:
         if key in browser_queues and browser_queues[key]:
             browser_queues[key].pop(0)
@@ -175,9 +246,9 @@ def get_latest_otp():
     add_browser_to_queue(token, identifier, browser_id)
 
     # retrieve the session first_request time (if present)
-    session_key = (token, identifier, browser_id)
+    session_key = (normalize_token(token), normalize_identifier(identifier), browser_id)
     with store_lock:
-        session_time = client_sessions.get(session_key, {}).get("first_request", None)
+        session_time = client_sessions.get((session_key[0], session_key[1], browser_id), {}).get("first_request", None)
     if session_time is None:
         session_time = now()
 
@@ -201,7 +272,7 @@ def get_latest_otp():
                 otp_data.setdefault(token, []).append(latest)
             pop_browser_from_queue(token, identifier)
             with store_lock:
-                client_sessions.pop(session_key, None)
+                client_sessions.pop((normalize_token(token), normalize_identifier(identifier), browser_id), None)
             app.logger.debug(f"delivering vehicle otp token={token} vehicle={vehicle} otp={latest['otp']}")
             return jsonify({
                 "status": "success",
@@ -232,7 +303,7 @@ def get_latest_otp():
                 otp_data.setdefault(token, []).append(latest)
             pop_browser_from_queue(token, identifier)
             with store_lock:
-                client_sessions.pop(session_key, None)
+                client_sessions.pop((normalize_token(token), normalize_identifier(identifier), browser_id), None)
             app.logger.debug(f"delivering mobile otp token={token} sim={sim_number} otp={latest['otp']}")
             return jsonify({
                 "status": "success",
