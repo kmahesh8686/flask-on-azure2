@@ -2,58 +2,71 @@ from flask import Flask, request, jsonify, redirect, url_for
 from flask_cors import CORS
 from datetime import datetime
 import zoneinfo
+import threading
 
 app = Flask(__name__)
 CORS(app)
 
 # =========================
-# Storage
+# Storage (in-memory)
 # =========================
-mobile_otps = []   # [{"otp":..., "token":..., "sim_number":..., "timestamp":...}]
-vehicle_otps = []  # [{"otp":..., "token":..., "vehicle":..., "timestamp":...}]
-otp_data = {}      # token -> list of delivered OTPs (with browser_id)
-client_sessions = {}   # (token, sim_number/vehicle, browser_id) -> {"first_request": datetime}
-browser_queues = {}    # (token, sim_number/vehicle) -> [browser_id1, browser_id2, ...]
+mobile_otps = []   # [{"otp":..., "token":..., "sim_number":..., "timestamp":..., "is_vehicle_otp": False}]
+vehicle_otps = []  # [{"otp":..., "token":..., "vehicle":..., "timestamp":..., "is_vehicle_otp": True}]
+otp_data = {}      # token -> list of delivered OTPs (with browser_id & timestamp)
+client_sessions = {}   # (token, identifier, browser_id) -> {"first_request": datetime}
+browser_queues = {}    # (token, identifier) -> [browser_id1, browser_id2, ...]
 login_sessions = {}    # mobile_number -> [ { "timestamp":..., "source":... }, ...]
 
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
+store_lock = threading.Lock()
 
 # =========================
 # Helpers
 # =========================
+def now():
+    return datetime.now(IST)
+
 def now_str():
-    return datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+    return now().strftime("%Y-%m-%d %H:%M:%S")
 
 def add_browser_to_queue(token, identifier, browser_id):
     key = (token, identifier)
-    if key not in browser_queues:
-        browser_queues[key] = []
-    if browser_id not in browser_queues[key]:
-        browser_queues[key].append(browser_id)
-        client_sessions[(token, identifier, browser_id)] = {"first_request": datetime.now(IST)}
+    with store_lock:
+        if key not in browser_queues:
+            browser_queues[key] = []
+        if browser_id not in browser_queues[key]:
+            browser_queues[key].append(browser_id)
+            client_sessions[(token, identifier, browser_id)] = {"first_request": now()}
 
 def get_next_browser(token, identifier):
     key = (token, identifier)
-    if key in browser_queues and browser_queues[key]:
-        return browser_queues[key][0]
+    with store_lock:
+        if key in browser_queues and browser_queues[key]:
+            return browser_queues[key][0]
     return None
 
 def pop_browser_from_queue(token, identifier):
     key = (token, identifier)
-    if key in browser_queues and browser_queues[key]:
-        browser_queues[key].pop(0)
+    with store_lock:
+        if key in browser_queues and browser_queues[key]:
+            browser_queues[key].pop(0)
+            if not browser_queues[key]:
+                browser_queues.pop(key, None)
 
 # =========================
-# OTP Endpoints
+# API: receive OTP (from Android app)
 # =========================
 @app.route('/api/receive-otp', methods=['POST'])
 def receive_otp():
     try:
         data = request.get_json(force=True)
         otp = (data.get('otp') or "").strip()
-        sim_number = (data.get('sim_number') or "").strip().upper()
         token = (data.get('token') or "").strip()
-        vehicle = (data.get('vehicle') or "").strip().upper()
+        sim_number = (data.get('sim_number') or "").strip().upper()
+        vehicle = (data.get('vehicle') or data.get('vehicle_number') or "").strip().upper()
+        is_vehicle_flag = data.get('is_vehicle_otp', False)
+        if isinstance(is_vehicle_flag, str):
+            is_vehicle_flag = is_vehicle_flag.lower() in ("1", "true", "yes")
 
         if not otp or not token:
             return jsonify({"status": "error", "message": "OTP and token required"}), 400
@@ -61,22 +74,36 @@ def receive_otp():
         entry = {
             "otp": otp,
             "token": token,
-            "timestamp": datetime.now(IST)
+            "timestamp": now(),
+            "is_vehicle_otp": bool(is_vehicle_flag)
         }
 
-        if vehicle:
-            entry["vehicle"] = vehicle
-            vehicle_otps.append(entry)
-        else:
-            entry["sim_number"] = sim_number or "UNKNOWNSIM"
-            mobile_otps.append(entry)
+        with store_lock:
+            # Priority: vehicle text -> explicit vehicle flag -> mobile
+            if vehicle:
+                entry["vehicle"] = vehicle
+                entry["is_vehicle_otp"] = True
+                vehicle_otps.append(entry)
+                stored_as = "vehicle"
+            elif is_vehicle_flag:
+                entry["vehicle"] = ""  # flagged as vehicle OTP but no vehicle text
+                entry["is_vehicle_otp"] = True
+                vehicle_otps.append(entry)
+                stored_as = "vehicle"
+            else:
+                entry["sim_number"] = sim_number or "UNKNOWNSIM"
+                entry["is_vehicle_otp"] = False
+                mobile_otps.append(entry)
+                stored_as = "mobile"
 
-        return jsonify({"status": "success", "message": "OTP stored"}), 200
+        return jsonify({"status": "success", "message": "OTP stored", "stored_as": stored_as}), 200
     except Exception as e:
-        print("Error receiving from app:", e)
+        app.logger.exception("receive_otp error")
         return jsonify({"status": "error", "message": str(e)}), 400
 
-
+# =========================
+# API: get latest OTP (polled by userscript)
+# =========================
 @app.route('/api/get-latest-otp', methods=['GET'])
 def get_latest_otp():
     token = (request.args.get('token') or "").strip()
@@ -90,59 +117,70 @@ def get_latest_otp():
     identifier = sim_number if sim_number else vehicle
     add_browser_to_queue(token, identifier, browser_id)
 
-    session_time = client_sessions[(token, identifier, browser_id)]["first_request"]
+    session_key = (token, identifier, browser_id)
+    session_time = client_sessions.get(session_key, {}).get("first_request", now())
     next_browser = get_next_browser(token, identifier)
 
-    # Vehicle OTPs
+    # Vehicle OTPs path
     if vehicle:
-        new_otps = [
-            o for o in vehicle_otps
-            if o["token"] == token
-            and o.get("vehicle", "").upper() == vehicle
-            and o["timestamp"] > session_time
-        ]
+        with store_lock:
+            new_otps = [
+                o for o in vehicle_otps
+                if o["token"] == token
+                and o.get("vehicle", "").upper() == vehicle
+                and o["timestamp"] > session_time
+            ]
         if new_otps and next_browser == browser_id:
             latest = new_otps[0]
-            vehicle_otps.remove(latest)
-            latest["browser_id"] = browser_id  # include browser_id
-            otp_data.setdefault(token, []).append(latest)
+            with store_lock:
+                if latest in vehicle_otps:
+                    vehicle_otps.remove(latest)
+                latest["browser_id"] = browser_id
+                otp_data.setdefault(token, []).append(latest)
             pop_browser_from_queue(token, identifier)
-            client_sessions.pop((token, identifier, browser_id), None)
+            client_sessions.pop(session_key, None)
             return jsonify({
                 "status": "success",
                 "otp": latest["otp"],
-                "vehicle": latest["vehicle"],
+                "vehicle": latest.get("vehicle", ""),
+                "is_vehicle_otp": bool(latest.get("is_vehicle_otp", True)),
                 "browser_id": browser_id,
                 "timestamp": latest["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
             }), 200
-        return jsonify({"status": "waiting"}), 200
+        else:
+            return jsonify({"status": "waiting"}), 200
 
-    # Mobile OTPs
+    # Mobile OTPs path
     else:
-        new_otps = [
-            o for o in mobile_otps
-            if o["token"] == token
-            and o.get("sim_number", "").upper() == sim_number
-            and o["timestamp"] > session_time
-        ]
+        with store_lock:
+            new_otps = [
+                o for o in mobile_otps
+                if o["token"] == token
+                and o.get("sim_number", "").upper() == sim_number
+                and o["timestamp"] > session_time
+            ]
         if new_otps and next_browser == browser_id:
             latest = new_otps[0]
-            mobile_otps.remove(latest)
-            latest["browser_id"] = browser_id  # include browser_id
-            otp_data.setdefault(token, []).append(latest)
+            with store_lock:
+                if latest in mobile_otps:
+                    mobile_otps.remove(latest)
+                latest["browser_id"] = browser_id
+                otp_data.setdefault(token, []).append(latest)
             pop_browser_from_queue(token, identifier)
-            client_sessions.pop((token, identifier, browser_id), None)
+            client_sessions.pop(session_key, None)
             return jsonify({
                 "status": "success",
                 "otp": latest["otp"],
-                "sim_number": latest["sim_number"],
+                "sim_number": latest.get("sim_number", ""),
+                "is_vehicle_otp": bool(latest.get("is_vehicle_otp", False)),
                 "browser_id": browser_id,
                 "timestamp": latest["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
             }), 200
-        return jsonify({"status": "waiting"}), 200
+        else:
+            return jsonify({"status": "waiting"}), 200
 
 # =========================
-# Status / Dashboard
+# Status / Dashboard (keeps your HTML layout)
 # =========================
 @app.route('/api/status', methods=['GET', 'POST'])
 def status():
@@ -277,7 +315,7 @@ def status():
     return html
 
 # =========================
-# Login Detection API
+# Login Detection endpoints
 # =========================
 @app.route('/api/login-detect', methods=['POST'])
 def login_detect():
@@ -288,13 +326,13 @@ def login_detect():
         if not mobile_number:
             return jsonify({"status": "error", "message": "mobile_number required"}), 400
 
-        entry = {"timestamp": datetime.now(IST), "source": source}
-        login_sessions.setdefault(mobile_number, []).append(entry)
+        entry = {"timestamp": now(), "source": source}
+        with store_lock:
+            login_sessions.setdefault(mobile_number, []).append(entry)
 
         return jsonify({"status": "success", "message": "Login detected"}), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 400
-
 
 @app.route('/api/login-found', methods=['GET'])
 def login_found():
@@ -302,17 +340,17 @@ def login_found():
     if not mobile_number:
         return jsonify({"status": "error", "message": "mobile_number required"}), 400
 
-    if mobile_number in login_sessions:
-        detections = [
-            {"timestamp": e["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), "source": e.get("source","")}
-            for e in login_sessions[mobile_number]
-        ]
-        return jsonify({"status": "found", "mobile_number": mobile_number, "detections": detections}), 200
-    else:
-        return jsonify({"status": "not_found", "mobile_number": mobile_number}), 200
+    with store_lock:
+        if mobile_number in login_sessions:
+            detections = [
+                {"timestamp": e["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), "source": e.get("source","")}
+                for e in login_sessions[mobile_number]
+            ]
+            return jsonify({"status": "found", "mobile_number": mobile_number, "detections": detections}), 200
+    return jsonify({"status": "not_found", "mobile_number": mobile_number}), 200
 
 # =========================
 # Run App
 # =========================
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, host="0.0.0.0", port=5000)
