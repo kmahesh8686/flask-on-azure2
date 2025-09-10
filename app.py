@@ -20,7 +20,7 @@ login_sessions = {}    # mobile_number -> [ { "timestamp":..., "source":... }, .
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 
 # Config: how long without polling we consider a browser closed (seconds)
-BROWSER_STALE_SECONDS = float(20)  # adjust as needed
+BROWSER_STALE_SECONDS = float(10)  # adjust as needed
 
 # =========================
 # Helpers
