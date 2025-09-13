@@ -12,7 +12,7 @@ IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 # =========================
 # Predefined Tokens & Passwords
 # =========================
-PREDEFINED_TOKENS = ["TOKEN_A", "TOKEN_B", "TOKEN_C"]
+PREDEFINED_TOKENS = ["km8686", "kmk8686", "km5630"]
 token_passwords = {t: "12345678" for t in PREDEFINED_TOKENS}
 
 # =========================
