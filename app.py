@@ -4,7 +4,7 @@ from datetime import datetime
 import zoneinfo, time
 
 app = Flask(__name__)
-app.secret_key = "SUPERSECRETKEY"   # 🔒 change in production
+app.secret_key = "SUPERSECRETKEY"   # 🔒 change this in production
 CORS(app)
 
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
@@ -12,7 +12,7 @@ IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 # =========================
 # Predefined Tokens & Passwords
 # =========================
-PREDEFINED_TOKENS = ["km8686", "gs8686", "kmk8686"]
+PREDEFINED_TOKENS = ["TOKEN_A", "TOKEN_B", "TOKEN_C"]
 token_passwords = {t: "12345678" for t in PREDEFINED_TOKENS}
 
 # =========================
@@ -102,7 +102,7 @@ def cleanup_stale_browsers_and_handle_pending(token, identifier):
                     mark_otp_removed_to_data(token, p, reason="stale_browser", browser_id=b)
 
 # =========================
-# APIs (remain open)
+# APIs (open for clients)
 # =========================
 @app.route('/api/receive-otp', methods=['POST'])
 def receive_otp():
@@ -370,10 +370,6 @@ def status(token):
             </tr>
             """
 
-    token_links = "".join(
-        [f"<li><a href='/status/{t}' style='color:white'>{t}</a></li>" for t in PREDEFINED_TOKENS]
-    )
-
     html = f"""
     <html>
     <head>
@@ -383,8 +379,6 @@ def status(token):
             h2 {{ margin:20px 0; text-align:center; }}
             .container {{ display:flex; min-height:100vh; }}
             .sidebar {{ width:220px; background:#2C3E50; padding:20px; color:white; }}
-            .sidebar ul {{ list-style:none; padding:0; }}
-            .sidebar li {{ margin-bottom:10px; }}
             .sidebar button {{ margin-bottom:15px; width:100%; padding:10px; border:none; background:#3498DB; color:white; cursor:pointer; border-radius:5px; }}
             .content {{ flex-grow:1; padding:30px; }}
             table {{ border-collapse: collapse; width:100%; background:white; }}
@@ -413,8 +407,6 @@ def status(token):
         <h2>KM OTP Dashboard ({token})</h2>
         <div class="container">
             <div class="sidebar">
-                <h3>Tokens</h3>
-                <ul>{token_links}</ul>
                 <button onclick="showSection('otp_section')">OTP DATA</button>
                 <button onclick="showSection('login_section')">LOGIN DETECTIONS</button>
                 <button onclick="showSection('change_password')">CHANGE PASSWORD</button>
