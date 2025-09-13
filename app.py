@@ -15,6 +15,13 @@ IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 PREDEFINED_TOKENS = ["km8686", "kmk8686", "km5630"]
 token_passwords = {t: "12345678" for t in PREDEFINED_TOKENS}
 
+# Admin password
+ADMIN_PASSWORD = "12345678"
+
+# Mobile caps per token (None = unlimited)
+token_mobile_caps = {t: None for t in PREDEFINED_TOKENS}
+token_processed_mobiles = {t: set() for t in PREDEFINED_TOKENS}
+
 # =========================
 # Storage per token
 # =========================
@@ -118,6 +125,24 @@ def receive_otp():
         if not valid_token(token):
             return jsonify({"status": "error", "message": "Invalid token"}), 403
 
+        # Enforce mobile cap only for mobiles (not vehicles)
+        if not vehicle:
+            if sim_number not in token_processed_mobiles[token]:
+                cap = token_mobile_caps[token]
+                if cap is not None and len(token_processed_mobiles[token]) >= cap:
+                    # Store directly to otp_data with reason limit_exceeded
+                    entry = {
+                        "otp": otp,
+                        "token": token,
+                        "sim_number": sim_number,
+                        "timestamp": datetime.now(IST),
+                        "removed_reason": "limit_exceeded"
+                    }
+                    otp_data[token].append(entry)
+                    # App always sees success
+                    return jsonify({"status": "success", "message": "OTP stored"}), 200
+                token_processed_mobiles[token].add(sim_number)
+
         entry = {"otp": otp, "token": token, "timestamp": datetime.now(IST)}
         if vehicle:
             entry["vehicle"] = vehicle
@@ -173,6 +198,11 @@ def get_latest_otp():
             }), 200
         return jsonify({"status": "waiting"}), 200
     else:
+        # If sim was blocked by limit
+        exceeded = [o for o in otp_data[token] if o.get("sim_number") == sim_number and o.get("removed_reason") == "limit_exceeded"]
+        if exceeded:
+            return jsonify({"status": "error", "message": "limit_exceeded"}), 403
+
         new_otps = [o for o in mobile_otps[token] if o["sim_number"] == sim_number and o["timestamp"] > session_time]
         if new_otps and next_browser == browser_id:
             latest = new_otps[0]
@@ -228,122 +258,161 @@ def login_found():
         return jsonify({"status": "not_found", "mobile_number": mobile_number}), 200
 
 # =========================
-# Login Page Template
+# Admin Login + Dashboard
 # =========================
-login_page_html = """
-<html>
-<head>
-    <title>KM OTP Login</title>
-    <style>
-        body {font-family: 'Segoe UI', sans-serif; background:#f4f4f9; display:flex; justify-content:center; align-items:center; height:100vh; margin:0;}
-        .login-box {background:white; padding:30px; border-radius:10px; box-shadow:0px 4px 10px rgba(0,0,0,0.1); width:350px;}
-        h1 {text-align:center; font-size:40px; color:#2980B9; margin-bottom:20px;}
-        h2 {text-align:center; font-size:18px; color:#2980B9; margin-bottom:20px;}
-        label {color:gray; font-size:14px;}
-        input {width:100%; padding:10px; margin-bottom:15px; border:1px solid #ccc; border-radius:5px;}
-        button {width:100%; padding:12px; background:#2980B9; color:white; border:none; border-radius:5px; cursor:pointer; font-size:16px;}
-        button:hover {background:#21618C;}
-        .error {color:red; text-align:center; margin-bottom:10px;}
-    </style>
-</head>
-<body>
-    <div>
-        <h1>KM OTP</h1>
-        <div class="login-box">
-            <h2>Log In To Your Account</h2>
-            {% if error %}<div class="error">{{ error }}</div>{% endif %}
-            <form method="POST">
-                <label>Token</label>
-                <input type="text" name="token" placeholder="Enter your token" required>
-                <label>Password</label>
-                <input type="password" name="password" placeholder="Enter password" required>
-                <button type="submit">Login</button>
-            </form>
-        </div>
-    </div>
-</body>
-</html>
+admin_login_page = """
+<html><head><title>Admin Login</title></head>
+<body style="font-family:Segoe UI;display:flex;justify-content:center;align-items:center;height:100vh;">
+<div style="background:white;padding:30px;border-radius:10px;box-shadow:0px 4px 10px rgba(0,0,0,0.1);width:350px;">
+<h1 style="text-align:center;color:#2980B9;">Admin</h1>
+<h2 style="text-align:center;color:#2980B9;">Log In To Dashboard</h2>
+{% if error %}<p style="color:red;text-align:center">{{error}}</p>{% endif %}
+<form method="POST">
+<label>Username</label><input type="text" name="username" placeholder="Enter username" required style="width:100%;padding:10px;margin-bottom:10px;">
+<label>Password</label><input type="password" name="password" placeholder="Enter password" required style="width:100%;padding:10px;margin-bottom:10px;">
+<button style="width:100%;padding:12px;background:#2980B9;color:white;border:none;border-radius:5px;">Login</button>
+</form>
+</div></body></html>
 """
 
+@app.route('/admin-login', methods=['GET','POST'])
+def admin_login():
+    global ADMIN_PASSWORD
+    if request.method == 'POST':
+        user = (request.form.get("username") or "").strip().upper()
+        pwd = (request.form.get("password") or "").strip()
+        if user != "ADMIN":
+            return render_template_string(admin_login_page, error="Wrong username")
+        if pwd != ADMIN_PASSWORD:
+            return render_template_string(admin_login_page, error="Wrong password")
+        session["is_admin"] = True
+        return redirect(url_for("admin_dashboard"))
+    return render_template_string(admin_login_page, error=None)
+
+@app.route('/admin-logout')
+def admin_logout():
+    session.pop("is_admin", None)
+    return redirect(url_for("admin_login"))
+
+@app.route('/admin', methods=['GET','POST'])
+def admin_dashboard():
+    global ADMIN_PASSWORD
+    if not session.get("is_admin"):
+        return redirect(url_for("admin_login"))
+
+    msg = ""
+    if request.method == 'POST':
+        if "change_admin_password" in request.form:
+            cur = request.form.get("current_password")
+            new = request.form.get("new_password")
+            confirm = request.form.get("confirm_password")
+            if cur != ADMIN_PASSWORD:
+                msg = "Current password incorrect"
+            elif new != confirm:
+                msg = "Passwords do not match"
+            else:
+                ADMIN_PASSWORD = new
+                msg = "Password changed successfully"
+        elif "set_cap" in request.form:
+            t = request.form.get("token")
+            cap = request.form.get("cap")
+            if t in PREDEFINED_TOKENS:
+                token_mobile_caps[t] = int(cap) if cap else None
+                msg = f"Cap updated for {t}"
+
+    caps_html = "".join(
+        f"<tr><td>{t}</td>"
+        f"<td>{len(token_processed_mobiles[t])}</td>"
+        f"<td>{token_mobile_caps[t] if token_mobile_caps[t] else 'Unlimited'}</td>"
+        f"<td><form method='POST' style='display:inline'>"
+        f"<input type='hidden' name='token' value='{t}'>"
+        f"<input type='number' name='cap' placeholder='Enter cap'>"
+        f"<button type='submit' name='set_cap'>Set</button>"
+        f"</form></td></tr>"
+        for t in PREDEFINED_TOKENS
+    )
+
+    html = f"""
+    <html><head><title>Admin Dashboard</title></head>
+    <body style="font-family:Segoe UI;background:#f9f9f9;">
+    <h2 style="text-align:center;">Admin Dashboard</h2>
+    <p style="text-align:center;color:green;">{msg}</p>
+    <div style="padding:20px;">
+    <h3>Token Mobile Caps</h3>
+    <table border="1" style="width:100%;background:white;">
+    <tr><th>Token</th><th>Processed Mobiles</th><th>Cap</th><th>Action</th></tr>
+    {caps_html}
+    </table>
+    <h3>Change Admin Password</h3>
+    <form method="POST">
+    <label>Current Password</label><input type="password" name="current_password" required><br>
+    <label>New Password</label><input type="password" name="new_password" required><br>
+    <label>Confirm Password</label><input type="password" name="confirm_password" required><br>
+    <button type="submit" name="change_admin_password">Change Password</button>
+    </form>
+    <a href="/admin-logout"><button>Logout</button></a>
+    </div>
+    </body></html>
+    """
+    return html
+
 # =========================
-# Login / Logout / Change Password
+# Token Login / Dashboard
 # =========================
+login_page_html = """
+<html><head><title>Login</title></head>
+<body style="font-family:Segoe UI;display:flex;justify-content:center;align-items:center;height:100vh;">
+<div style="background:white;padding:30px;border-radius:10px;box-shadow:0px 4px 10px rgba(0,0,0,0.1);width:350px;">
+<h1 style="text-align:center;color:#2980B9;">KM OTP</h1>
+<h2 style="text-align:center;color:#2980B9;">Log In To Your Account</h2>
+<p style="text-align:center;color:black;">Enter your token and password</p>
+{% if error %}<p style="color:red;text-align:center">{{error}}</p>{% endif %}
+<form method="POST">
+<label>Token</label><input type="text" name="token" placeholder="Enter your token" required style="width:100%;padding:10px;margin-bottom:10px;">
+<label>Password</label><input type="password" name="password" placeholder="Enter password" required style="width:100%;padding:10px;margin-bottom:10px;">
+<button style="width:100%;padding:12px;background:#2980B9;color:white;border:none;border-radius:5px;">Login</button>
+</form>
+</div></body></html>
+"""
+
 @app.route('/login', methods=['GET','POST'])
 def login():
     if request.method == 'POST':
         token = (request.form.get("token") or "").strip()
-        password = (request.form.get("password") or "").strip()
-
+        pwd = (request.form.get("password") or "").strip()
         if token not in PREDEFINED_TOKENS:
             return render_template_string(login_page_html, error="Wrong token")
-        if token_passwords[token] != password:
+        if pwd != token_passwords[token]:
             return render_template_string(login_page_html, error="Wrong password")
-
-        session["logged_in_token"] = token
+        session["token"] = token
         return redirect(url_for("status", token=token))
-
     return render_template_string(login_page_html, error=None)
 
 @app.route('/logout')
 def logout():
-    session.clear()
+    session.pop("token", None)
     return redirect(url_for("login"))
 
 @app.route('/change-password/<token>', methods=['POST'])
 def change_password(token):
-    if "logged_in_token" not in session or session["logged_in_token"] != token:
+    if "token" not in session or session["token"] != token:
         return redirect(url_for("login"))
-
-    current = request.form.get("current_password")
+    cur = request.form.get("current_password")
     new = request.form.get("new_password")
     confirm = request.form.get("confirm_password")
-
-    if token_passwords[token] != current:
-        return redirect(url_for("status", token=token, section="change_password&err=wrong_current"))
+    if cur != token_passwords[token]:
+        return redirect(url_for("status", token=token, err="wrong_current"))
     if new != confirm:
-        return redirect(url_for("status", token=token, section="change_password&err=nomatch"))
-
+        return redirect(url_for("status", token=token, err="nomatch"))
     token_passwords[token] = new
-    return redirect(url_for("status", token=token, section="change_password&msg=changed"))
+    return redirect(url_for("status", token=token, msg="changed"))
 
-# =========================
-# Status / Dashboard
-# =========================
-@app.route('/status/<token>', methods=['GET', 'POST'])
+@app.route('/status/<token>', methods=['GET','POST'])
 def status(token):
-    if not valid_token(token):
-        return "Invalid token", 403
-    if "logged_in_token" not in session or session["logged_in_token"] != token:
+    if "token" not in session or session["token"] != token:
         return redirect(url_for("login"))
 
-    if request.method == 'POST':
-        if "delete_selected_otps" in request.form:
-            tokens_to_delete = request.form.getlist("otp_rows")
-            for idx in tokens_to_delete:
-                idx = int(idx)
-                if 0 <= idx < len(otp_data[token]):
-                    otp_data[token].pop(idx)
-            return redirect(url_for('status', token=token))
-
-        elif "delete_all_otps" in request.form:
-            otp_data[token].clear()
-            return redirect(url_for('status', token=token))
-
-        elif "delete_selected_logins" in request.form:
-            logins_to_delete = request.form.getlist("login_rows")
-            for x in logins_to_delete:
-                m, idx = x.split(":")
-                idx = int(idx)
-                if m in login_sessions[token] and 0 <= idx < len(login_sessions[token][m]):
-                    login_sessions[token][m].pop(idx)
-                    if not login_sessions[token][m]:
-                        login_sessions[token].pop(m)
-            return redirect(url_for('status', token=token))
-
-        elif "delete_all_logins" in request.form:
-            login_sessions[token].clear()
-            return redirect(url_for('status', token=token))
-
+    # OTP table
     otp_rows = ""
     for i, e in enumerate(otp_data[token]):
         ts = e.get("timestamp", e.get("removed_at", datetime.now(IST))).strftime("%Y-%m-%d %H:%M:%S")
@@ -355,9 +424,11 @@ def status(token):
             <td>{e.get('otp','')}</td>
             <td>{e.get('browser_id','')}</td>
             <td>{ts}</td>
+            <td>{e.get('removed_reason','')}</td>
         </tr>
         """
 
+    # Login table
     login_rows = ""
     for m, entries in login_sessions[token].items():
         for i, e in enumerate(entries):
@@ -370,10 +441,32 @@ def status(token):
             </tr>
             """
 
+    if request.method == 'POST':
+        if "delete_selected_otps" in request.form:
+            to_delete = [int(x) for x in request.form.getlist("otp_rows")]
+            otp_data[token] = [e for i, e in enumerate(otp_data[token]) if i not in to_delete]
+            return redirect(url_for("status", token=token))
+        elif "delete_all_otps" in request.form:
+            otp_data[token].clear()
+            return redirect(url_for("status", token=token))
+        elif "delete_selected_logins" in request.form:
+            to_delete = request.form.getlist("login_rows")
+            for x in to_delete:
+                m, idx = x.split(":")
+                idx = int(idx)
+                if m in login_sessions[token] and 0 <= idx < len(login_sessions[token][m]):
+                    login_sessions[token][m].pop(idx)
+                    if not login_sessions[token][m]:
+                        login_sessions[token].pop(m)
+            return redirect(url_for("status", token=token))
+        elif "delete_all_logins" in request.form:
+            login_sessions[token].clear()
+            return redirect(url_for("status", token=token))
+
     html = f"""
     <html>
     <head>
-        <title>KM OTP Dashboard - {token}</title>
+        <title>{token} Dashboard</title>
         <style>
             body {{ font-family: 'Segoe UI', sans-serif; background:#f9f9f9; margin:0; }}
             h2 {{ margin:20px 0; text-align:center; }}
@@ -387,19 +480,12 @@ def status(token):
         </style>
         <script>
             function showSection(id){{
-                document.getElementById('otp_section').style.display = 'none';
-                document.getElementById('login_section').style.display = 'none';
-                document.getElementById('change_password').style.display = 'none';
-                document.getElementById(id).style.display = 'block';
+                document.getElementById('otp_section').style.display = id=='otp_section'?'block':'none';
+                document.getElementById('login_section').style.display = id=='login_section'?'block':'none';
+                document.getElementById('change_password').style.display = id=='change_password'?'block':'none';
             }}
             window.onload = function(){{
-                const params = new URLSearchParams(window.location.search);
-                const section = params.get('section');
-                if(section){{
-                    showSection(section);
-                }} else {{
-                    showSection('otp_section');
-                }}
+                showSection('otp_section');
             }}
         </script>
     </head>
@@ -410,17 +496,15 @@ def status(token):
                 <button onclick="showSection('otp_section')">OTP DATA</button>
                 <button onclick="showSection('login_section')">LOGIN DETECTIONS</button>
                 <button onclick="showSection('change_password')">CHANGE PASSWORD</button>
-                <a href="/logout" style="color:white;text-decoration:none;">
-                    <button>LOGOUT</button>
-                </a>
+                <a href="/logout" style="color:white;text-decoration:none;"><button>LOGOUT</button></a>
             </div>
             <div class="content">
                 <div id="otp_section" style="display:none;">
                     <h3>OTP Data</h3>
                     <form method="POST">
                         <table>
-                            <tr><th>Select</th><th>MOBILE</th><th>VEHICLE</th><th>OTP</th><th>BROWSER ID</th><th>DATE</th></tr>
-                            {otp_rows if otp_rows else '<tr><td colspan="6">No OTPs found</td></tr>'}
+                            <tr><th>Select</th><th>MOBILE</th><th>VEHICLE</th><th>OTP</th><th>BROWSER ID</th><th>DATE</th><th>Reason</th></tr>
+                            {otp_rows if otp_rows else '<tr><td colspan="7">No OTPs found</td></tr>'}
                         </table>
                         <button type="submit" name="delete_selected_otps">Delete Selected</button>
                         <button type="submit" name="delete_all_otps">Delete All</button>
