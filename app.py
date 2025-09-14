@@ -25,12 +25,12 @@ token_processed_mobiles = {t: set() for t in PREDEFINED_TOKENS}
 # =========================
 # Storage per token
 # =========================
-mobile_otps = {t: [] for t in PREDEFINED_TOKENS}      # pending mobile OTPs (not yet delivered)
-vehicle_otps = {t: [] for t in PREDEFINED_TOKENS}     # pending vehicle OTPs
-otp_data = {t: [] for t in PREDEFINED_TOKENS}         # all delivered/removed OTPs with reasons
-client_sessions = {t: {} for t in PREDEFINED_TOKENS}  # (identifier, browser_id) -> session dict
-browser_queues = {t: {} for t in PREDEFINED_TOKENS}   # identifier -> [browser_id,...]
-login_sessions = {t: {} for t in PREDEFINED_TOKENS}   # token -> mobile -> [detections]
+mobile_otps = {t: [] for t in PREDEFINED_TOKENS}
+vehicle_otps = {t: [] for t in PREDEFINED_TOKENS}
+otp_data = {t: [] for t in PREDEFINED_TOKENS}      # all delivered/removed OTPs with reasons
+client_sessions = {t: {} for t in PREDEFINED_TOKENS}
+browser_queues = {t: {} for t in PREDEFINED_TOKENS}
+login_sessions = {t: {} for t in PREDEFINED_TOKENS}
 
 BROWSER_STALE_SECONDS = float(10)
 
@@ -74,7 +74,6 @@ def mark_otp_removed_to_data(token, entry, reason="stale_browser", browser_id=No
     otp_data[token].append(record)
 
 def cleanup_stale_browsers_and_handle_pending(token, identifier):
-    """Remove stale browsers and move OTPs that would have been destined for them to otp_data."""
     now_ts = time.time()
     queues = browser_queues[token]
     sessions = client_sessions[token]
@@ -84,40 +83,31 @@ def cleanup_stale_browsers_and_handle_pending(token, identifier):
     for b in queue_snapshot:
         sess = sessions.get((identifier, b))
         if not sess:
-            try:
-                queues[identifier].remove(b)
-            except ValueError:
-                pass
+            try: queues[identifier].remove(b)
+            except ValueError: pass
             sessions.pop((identifier, b), None)
             continue
         last = sess.get("last_request", 0)
         first_req_dt = sess.get("first_request", datetime.now(IST))
         if now_ts - last > BROWSER_STALE_SECONDS:
-            try:
-                queues[identifier].remove(b)
-            except ValueError:
-                pass
+            try: queues[identifier].remove(b)
+            except ValueError: pass
             sessions.pop((identifier, b), None)
-
-            # Move any pending mobile OTPs that arrived after first_request to otp_data
+            # Move pending mobile OTPs that arrived after first_request
             for p in list(mobile_otps[token]):
                 if (p.get("sim_number") or "").upper() == identifier.upper() and p.get("timestamp") and p["timestamp"] > first_req_dt:
-                    try:
-                        mobile_otps[token].remove(p)
-                    except ValueError:
-                        pass
+                    try: mobile_otps[token].remove(p)
+                    except ValueError: pass
                     mark_otp_removed_to_data(token, p, reason="stale_browser", browser_id=b)
-            # Move any pending vehicle OTPs that arrived after first_request to otp_data
+            # Move vehicle OTPs
             for p in list(vehicle_otps[token]):
                 if (p.get("vehicle") or "").upper() == identifier.upper() and p.get("timestamp") and p["timestamp"] > first_req_dt:
-                    try:
-                        vehicle_otps[token].remove(p)
-                    except ValueError:
-                        pass
+                    try: vehicle_otps[token].remove(p)
+                    except ValueError: pass
                     mark_otp_removed_to_data(token, p, reason="stale_browser", browser_id=b)
 
 # =========================
-# APIs (open for clients)
+# OTP APIs
 # =========================
 @app.route('/api/receive-otp', methods=['POST'])
 def receive_otp():
@@ -138,7 +128,7 @@ def receive_otp():
             if sim_number not in token_processed_mobiles[token]:
                 cap = token_mobile_caps[token]
                 if cap is not None and len(token_processed_mobiles[token]) >= cap:
-                    # Store directly to otp_data with reason limit_exceeded (do NOT deliver to browsers)
+                    # Store directly to otp_data with reason limit_exceeded
                     entry = {
                         "otp": otp,
                         "token": token,
@@ -184,19 +174,16 @@ def get_latest_otp():
     cleanup_stale_browsers_and_handle_pending(token, identifier)
     session_entry = client_sessions[token].get(cs_key)
     if not session_entry:
-        # may have been removed as stale
         return jsonify({"status": "waiting"}), 200
     session_time = session_entry["first_request"]
     next_browser = get_next_browser(token, identifier)
 
     if vehicle:
-        new_otps = [o for o in vehicle_otps[token] if o["token"] == token and o.get("vehicle", "").upper() == vehicle and o["timestamp"] > session_time]
+        new_otps = [o for o in vehicle_otps[token] if o["vehicle"] == vehicle and o["timestamp"] > session_time]
         if new_otps and next_browser == browser_id:
             latest = new_otps[0]
-            try:
-                vehicle_otps[token].remove(latest)
-            except ValueError:
-                pass
+            try: vehicle_otps[token].remove(latest)
+            except ValueError: pass
             latest["browser_id"] = browser_id
             otp_data[token].append(latest)
             pop_browser_from_queue(token, identifier)
@@ -210,18 +197,15 @@ def get_latest_otp():
             }), 200
         return jsonify({"status": "waiting"}), 200
     else:
-        # If sim was blocked by limit, browsers should receive limit_exceeded
         exceeded = [o for o in otp_data[token] if o.get("sim_number") == sim_number and o.get("removed_reason") == "limit_exceeded"]
         if exceeded:
             return jsonify({"status": "error", "message": "limit_exceeded"}), 403
 
-        new_otps = [o for o in mobile_otps[token] if o["token"] == token and o.get("sim_number","").upper() == sim_number and o["timestamp"] > session_time]
+        new_otps = [o for o in mobile_otps[token] if o.get("sim_number","").upper() == sim_number and o["timestamp"] > session_time]
         if new_otps and next_browser == browser_id:
             latest = new_otps[0]
-            try:
-                mobile_otps[token].remove(latest)
-            except ValueError:
-                pass
+            try: mobile_otps[token].remove(latest)
+            except ValueError: pass
             latest["browser_id"] = browser_id
             otp_data[token].append(latest)
             pop_browser_from_queue(token, identifier)
@@ -276,12 +260,12 @@ def login_found():
         return jsonify({"status": "not_found", "mobile_number": mobile_number}), 200
 
 # =========================
-# Admin Login + Dashboard (stylish sidebar + sections)
+# Admin Login + Dashboard
 # =========================
 admin_login_page = """
 <html><head><title>Admin Login</title></head>
 <body style="font-family:Segoe UI, Arial, sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#f4f6f9;">
-<div style="background:white;padding:30px;border-radius:10px;box-shadow:0px 8px 30px rgba(0,0,0,0.08);width:380px;">
+<div style="background:white;padding:30px;border-radius:10px;box-shadow:0px 8px 30px rgba(0,0,0,0.06);width:380px;">
 <h1 style="text-align:center;color:#2980B9;margin:0;font-size:28px;">ADMIN</h1>
 <p style="text-align:center;color:#2980B9;margin:6px 0 18px;">Log In To Dashboard</p>
 {% if error %}<p style="color:red;text-align:center">{{error}}</p>{% endif %}
@@ -416,9 +400,7 @@ def admin_dashboard():
                 <div class="message">{msg}</div>
                 <div id="tokens_section" class="card" style="display:none;">
                     <h3>Available Tokens</h3>
-                    <ul class="token-list">
-                        {token_list_html}
-                    </ul>
+                    <ul class="token-list">{token_list_html}</ul>
                     <p style="color:#666">Click a token to open its dashboard in a new tab.</p>
                 </div>
 
@@ -432,9 +414,7 @@ def admin_dashboard():
 
                 <div id="limit_section" class="card" style="display:none;">
                     <h3>Limit Exceeded</h3>
-                    <ul class="token-list">
-                        {limit_token_list_html}
-                    </ul>
+                    <ul class="token-list">{limit_token_list_html}</ul>
                     <p style="color:#666">Click a token to open the limit-exceeded list in a new tab.</p>
                 </div>
 
@@ -460,7 +440,7 @@ def admin_dashboard():
     return html
 
 # =========================
-# Admin limit-exceeded view per token (with delete controls)
+# Admin - limit-exceeded per token (with delete)
 # =========================
 @app.route('/admin-limit/<token>', methods=['GET','POST'])
 def admin_limit(token):
@@ -472,7 +452,6 @@ def admin_limit(token):
     if request.method == 'POST':
         if "delete_selected" in request.form:
             to_delete = [int(x) for x in request.form.getlist("otp_rows")]
-            # keep otp_data entries except selected limit_exceeded ones
             otp_data[token] = [
                 e for i, e in enumerate(otp_data[token])
                 if not (i in to_delete and e.get("removed_reason") == "limit_exceeded")
@@ -532,7 +511,7 @@ def admin_limit(token):
     return html
 
 # =========================
-# Token login/dashboard routes
+# Token login/dashboard
 # =========================
 login_page_html = """
 <html><head><title>Login</title></head>
@@ -585,10 +564,11 @@ def change_password(token):
 
 @app.route('/status/<token>', methods=['GET','POST'])
 def status(token):
-    if "token" not in session or session["token"] != token:
+    # ✅ Allow admin direct access OR token-login access
+    if not (("token" in session and session["token"] == token) or session.get("is_admin")):
         return redirect(url_for("login"))
 
-    # build otp_data table rows for this token
+    # OTP table (all otp_data entries for this token)
     otp_rows = ""
     for i, e in enumerate(otp_data[token]):
         ts = e.get("timestamp", e.get("removed_at", datetime.now(IST))).strftime("%Y-%m-%d %H:%M:%S")
@@ -604,7 +584,7 @@ def status(token):
         </tr>
         """
 
-    # build login detections table
+    # Login table
     login_rows = ""
     for m, entries in login_sessions[token].items():
         for i, e in enumerate(entries):
@@ -650,9 +630,9 @@ def status(token):
             .sidebar {{ width:220px; background:#2C3E50; padding:20px; color:white; }}
             .sidebar button {{ margin-bottom:15px; width:100%; padding:10px; border:none; background:#3498DB; color:white; cursor:pointer; border-radius:6px; font-weight:700; }}
             .content {{ flex-grow:1; padding:30px; }}
-            table {{ border-collapse: collapse; width:100%; background:white; box-shadow:0px 4px 14px rgba(0,0,0,0.06); }}
+            table {{ border-collapse: collapse; width:100%; background:white; box-shadow:0px 4px 14px rgba(0,0,0,0.06); border-radius:8px; overflow:hidden; }}
             th, td {{ border-bottom:1px solid #eee; padding:10px; text-align:center; }}
-            th {{ background:#2980B9; color:white; }}
+            th {{ background:#2980B9; color:white; font-weight:700; }}
             label {{ display:block; margin-top:6px; font-weight:700; color:#333; }}
             input[type=password] {{ padding:8px; margin-top:6px; width:100%; box-sizing:border-box; border-radius:6px; border:1px solid #ddd; }}
             button.action {{ padding:8px 12px; border-radius:6px; border:none; cursor:pointer; font-weight:700; }}
