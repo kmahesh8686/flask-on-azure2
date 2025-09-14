@@ -4,7 +4,7 @@ from datetime import datetime
 import zoneinfo, time
 
 app = Flask(__name__)
-app.secret_key = "SUPERSECRETKEY"   # 🔒 change this in production
+app.secret_key = "SUPERSECRETKEY"   # change this in production
 CORS(app)
 
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
@@ -34,14 +34,12 @@ login_sessions = {t: {} for t in PREDEFINED_TOKENS}
 
 BROWSER_STALE_SECONDS = float(10)
 
-
-def valid_token(token: str) -> bool:
-    return token in PREDEFINED_TOKENS
-
-
 # =========================
 # Helpers
 # =========================
+def valid_token(token: str) -> bool:
+    return token in PREDEFINED_TOKENS
+
 def add_browser_to_queue(token, identifier, browser_id):
     queues = browser_queues[token]
     sessions = client_sessions[token]
@@ -56,19 +54,16 @@ def add_browser_to_queue(token, identifier, browser_id):
     else:
         sessions[(identifier, browser_id)]["last_request"] = time.time()
 
-
 def get_next_browser(token, identifier):
     queues = browser_queues[token]
     if identifier in queues and queues[identifier]:
         return queues[identifier][0]
     return None
 
-
 def pop_browser_from_queue(token, identifier):
     queues = browser_queues[token]
     if identifier in queues and queues[identifier]:
         queues[identifier].pop(0)
-
 
 def mark_otp_removed_to_data(token, entry, reason="stale_browser", browser_id=None):
     record = entry.copy()
@@ -77,7 +72,6 @@ def mark_otp_removed_to_data(token, entry, reason="stale_browser", browser_id=No
     if browser_id:
         record["browser_id"] = browser_id
     otp_data[token].append(record)
-
 
 def cleanup_stale_browsers_and_handle_pending(token, identifier):
     now_ts = time.time()
@@ -119,9 +113,8 @@ def cleanup_stale_browsers_and_handle_pending(token, identifier):
                         pass
                     mark_otp_removed_to_data(token, p, reason="stale_browser", browser_id=b)
 
-
 # =========================
-# APIs (open for clients)
+# API Endpoints (clients)
 # =========================
 @app.route('/api/receive-otp', methods=['POST'])
 def receive_otp():
@@ -167,7 +160,6 @@ def receive_otp():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 400
 
-
 @app.route('/api/get-latest-otp', methods=['GET'])
 def get_latest_otp():
     token = (request.args.get('token') or "").strip()
@@ -197,7 +189,10 @@ def get_latest_otp():
         new_otps = [o for o in vehicle_otps[token] if o["vehicle"] == vehicle and o["timestamp"] > session_time]
         if new_otps and next_browser == browser_id:
             latest = new_otps[0]
-            vehicle_otps[token].remove(latest)
+            try:
+                vehicle_otps[token].remove(latest)
+            except ValueError:
+                pass
             latest["browser_id"] = browser_id
             otp_data[token].append(latest)
             pop_browser_from_queue(token, identifier)
@@ -219,7 +214,10 @@ def get_latest_otp():
         new_otps = [o for o in mobile_otps[token] if o["sim_number"] == sim_number and o["timestamp"] > session_time]
         if new_otps and next_browser == browser_id:
             latest = new_otps[0]
-            mobile_otps[token].remove(latest)
+            try:
+                mobile_otps[token].remove(latest)
+            except ValueError:
+                pass
             latest["browser_id"] = browser_id
             otp_data[token].append(latest)
             pop_browser_from_queue(token, identifier)
@@ -232,7 +230,6 @@ def get_latest_otp():
                 "timestamp": latest["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
             }), 200
         return jsonify({"status": "waiting"}), 200
-
 
 @app.route('/api/login-detect', methods=['POST'])
 def login_detect():
@@ -253,7 +250,6 @@ def login_detect():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 400
 
-
 @app.route('/api/login-found', methods=['GET'])
 def login_found():
     token = (request.args.get('token') or "").strip()
@@ -265,16 +261,15 @@ def login_found():
 
     if mobile_number in login_sessions[token]:
         detections = [
-            {"timestamp": e["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), "source": e.get("source", "")}
+            {"timestamp": e["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), "source": e.get("source","")}
             for e in login_sessions[token][mobile_number]
         ]
         return jsonify({"status": "found", "mobile_number": mobile_number, "detections": detections}), 200
     else:
         return jsonify({"status": "not_found", "mobile_number": mobile_number}), 200
 
-
 # =========================
-# Admin Login + Dashboard (full modern UI)
+# Admin Login + Dashboard
 # =========================
 admin_login_page = """
 <html><head><title>Admin Login</title></head>
@@ -293,8 +288,7 @@ admin_login_page = """
 </div></body></html>
 """
 
-
-@app.route('/admin-login', methods=['GET', 'POST'])
+@app.route('/admin-login', methods=['GET','POST'])
 def admin_login():
     global ADMIN_PASSWORD
     if request.method == 'POST':
@@ -308,28 +302,32 @@ def admin_login():
         return redirect(url_for("admin"))
     return render_template_string(admin_login_page, error=None)
 
-
 @app.route('/admin-logout')
 def admin_logout():
     session.pop("is_admin", None)
     return redirect(url_for("admin_login"))
 
-
-# Partial renderer for token embed (used by admin)
+# Helper to render token partials (used by both admin and token dashboard)
 def render_token_section_partial(token, section):
     # OTP section
     if section == "otp":
         rows = ""
         for i, e in enumerate(otp_data[token]):
             ts = e.get("timestamp", e.get("removed_at", datetime.now(IST))).strftime("%Y-%m-%d %H:%M:%S")
-            rows += f"<tr><td>{e.get('sim_number','')}</td><td>{e.get('vehicle','')}</td><td>{e.get('otp','')}</td><td>{e.get('browser_id','')}</td><td>{ts}</td><td>{e.get('removed_reason','')}</td></tr>"
+            rows += f"<tr><td><input type='checkbox' name='otp_rows' value='{i}'></td><td>{e.get('sim_number','')}</td><td>{e.get('vehicle','')}</td><td>{e.get('otp','')}</td><td>{e.get('browser_id','')}</td><td>{ts}</td><td>{e.get('removed_reason','')}</td></tr>"
         partial = f"""
         <div class="card">
             <h3>OTP Data - {token}</h3>
+            <form method="POST" action="/status/{token}?embed=1&section=otp">
             <table style="width:100%;border-collapse:collapse;">
-                <tr style="background:#2980B9;color:white;"><th>Mobile</th><th>Vehicle</th><th>OTP</th><th>Browser ID</th><th>Date</th><th>Reason</th></tr>
-                {rows if rows else '<tr><td colspan="6" style="padding:12px">No OTPs found</td></tr>'}
+                <tr style="background:#2980B9;color:white;"><th>Select</th><th>Mobile</th><th>Vehicle</th><th>OTP</th><th>Browser</th><th>Date</th><th>Reason</th></tr>
+                {rows if rows else '<tr><td colspan="7" style="padding:12px">No OTPs found</td></tr>'}
             </table>
+            <div style="margin-top:10px;">
+                <button type="submit" name="delete_selected_otps" style="padding:8px 10px;background:#e67e22;color:white;border:none;border-radius:6px;">Delete Selected</button>
+                <button type="submit" name="delete_all_otps" style="padding:8px 10px;background:#c0392b;color:white;border:none;border-radius:6px;margin-left:8px;">Delete All</button>
+            </div>
+            </form>
         </div>
         """
         return partial
@@ -338,20 +336,26 @@ def render_token_section_partial(token, section):
     if section == "login":
         rows = ""
         for m, entries in login_sessions[token].items():
-            for e in entries:
-                rows += f"<tr><td>{m}</td><td>{e['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}</td><td>{e.get('source','')}</td></tr>"
+            for i, e in enumerate(entries):
+                rows += f"<tr><td><input type='checkbox' name='login_rows' value='{m}:{i}'></td><td>{m}</td><td>{e['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}</td><td>{e.get('source','')}</td></tr>"
         partial = f"""
         <div class="card">
             <h3>Login Detections - {token}</h3>
+            <form method="POST" action="/status/{token}?embed=1&section=login">
             <table style="width:100%;border-collapse:collapse;">
-                <tr style="background:#2980B9;color:white;"><th>Mobile</th><th>Date</th><th>Source</th></tr>
-                {rows if rows else '<tr><td colspan="3" style="padding:12px">No login detections</td></tr>'}
+                <tr style="background:#2980B9;color:white;"><th>Select</th><th>Mobile</th><th>Date</th><th>Source</th></tr>
+                {rows if rows else '<tr><td colspan="4" style="padding:12px">No login detections</td></tr>'}
             </table>
+            <div style="margin-top:10px;">
+                <button type="submit" name="delete_selected_logins" style="padding:8px 10px;background:#e67e22;color:white;border:none;border-radius:6px;">Delete Selected</button>
+                <button type="submit" name="delete_all_logins" style="padding:8px 10px;background:#c0392b;color:white;border:none;border-radius:6px;margin-left:8px;">Delete All</button>
+            </div>
+            </form>
         </div>
         """
         return partial
 
-    # Change password section (admin can load this but only token owner can submit)
+    # Change password for token (admin can present this, but action is via admin/change-token-password)
     if section == "change_password":
         partial = f"""
         <div class="card">
@@ -367,7 +371,6 @@ def render_token_section_partial(token, section):
 
     return "<div class='card'><p>Invalid section</p></div>"
 
-
 @app.route('/admin/change-token-password/<token>', methods=['POST'])
 def admin_change_token_password(token):
     if not session.get("is_admin"):
@@ -381,22 +384,10 @@ def admin_change_token_password(token):
     token_passwords[token] = new
     return f"Password for {token} updated."
 
-
 @app.route('/admin', methods=['GET'])
 def admin():
     if not session.get("is_admin"):
         return redirect(url_for("admin_login"))
-
-    # Build tokens list HTML
-    token_links_html = "".join(
-        f"<li style='margin:8px 0;'><a href='#' onclick=\"loadToken('{t}','otp')\" style='color:#fff;text-decoration:none;font-weight:700;'>{t}</a></li>"
-        for t in PREDEFINED_TOKENS
-    )
-
-    limit_token_links_html = "".join(
-        f"<li style='margin:8px 0;'><a href='#' onclick=\"loadLimit('{t}')\" style='color:#fff;text-decoration:none;font-weight:700;'>{t}</a></li>"
-        for t in PREDEFINED_TOKENS
-    )
 
     # caps table rows
     caps_rows_html = "".join(
@@ -407,6 +398,9 @@ def admin():
         f"</form></td></tr>"
         for t in PREDEFINED_TOKENS
     )
+
+    # token list (used when admin clicks "TOKENS")
+    tokens_js_list = "[" + ",".join([f"'{t}'" for t in PREDEFINED_TOKENS]) + "]"
 
     html = f"""
     <html>
@@ -428,8 +422,19 @@ def admin():
             .muted {{ color:#666; font-size:13px; }}
             button.primary {{ background:#2980B9; color:white; border:none; padding:8px 12px; border-radius:6px; cursor:pointer; }}
             .topbar {{ display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; }}
+            .token-tile {{ padding:12px;background:#ecf0f1;border-radius:6px;width:160px;text-align:center;cursor:pointer;font-weight:700;color:#2C3E50; }}
+            .tokens-grid {{ display:flex; gap:12px; flex-wrap:wrap; }}
         </style>
         <script>
+            function loadTokens() {{
+                var tokens = {tokens_js_list};
+                var html = "<div class='card'><h3>Tokens</h3><div class='tokens-grid'>";
+                tokens.forEach(function(t) {{
+                    html += "<div class='token-tile' onclick=\\"loadToken('" + t + "','otp')\\">" + t + "</div>";
+                }});
+                html += "</div></div>";
+                document.getElementById('content_panel').innerHTML = html;
+            }}
             function loadToken(token, section) {{
                 var url = '/status/' + token + '?embed=1&section=' + section;
                 document.getElementById('content_panel').innerHTML = '<div class="card"><p>Loading...</p></div>';
@@ -438,8 +443,8 @@ def admin():
                     .then(function(html){{ document.getElementById('content_panel').innerHTML = html; }})
                     .catch(function(e){{ document.getElementById('content_panel').innerHTML = '<div class="card" style="color:red">Failed to load</div>'; }});
             }}
-            function loadLimit(token) {{
-                var url = '/admin/limit/' + token + '?embed=1';
+            function loadLimit() {{
+                var url = '/admin/limit/' + '{PREDEFINED_TOKENS[0]}' + '?embed=1';
                 document.getElementById('content_panel').innerHTML = '<div class="card"><p>Loading...</p></div>';
                 fetch(url, {{ credentials: 'same-origin' }})
                     .then(function(r){{ return r.text(); }})
@@ -463,7 +468,8 @@ def admin():
                     .catch(function(e){{ document.getElementById('content_panel').innerHTML = '<div class="card" style="color:red">Failed to load</div>'; }});
             }}
             window.onload = function() {{
-                // Optionally preload Caps panel
+                // loadTokens by default, or show welcome
+                document.getElementById('content_panel').innerHTML = '<div class="card"><h3>Welcome, Admin</h3><p class="muted">Click "TOKENS" to view tokens or use other sidebar actions.</p></div>';
             }};
         </script>
     </head>
@@ -471,21 +477,12 @@ def admin():
         <div class="app">
             <div class="sidebar">
                 <h2>ADMIN</h2>
-
-                <div class="section-title">TOKENS</div>
+                <div class="section-title">MENU</div>
                 <ul>
-                    {token_links_html}
-                </ul>
-
-                <div class="section-title">LIMIT EXCEEDED</div>
-                <ul>
-                    {limit_token_links_html}
-                </ul>
-
-                <div class="section-title">ACTIONS</div>
-                <ul>
-                    <li style="margin-top:8px;"><a href="#" onclick="loadCaps()" class="token-link">Token Caps</a></li>
-                    <li style="margin-top:8px;"><a href="#" onclick="loadAdminChangePassword()" class="token-link">Change Admin Password</a></li>
+                    <li><a href="#" class="token-link" onclick="loadTokens()">TOKENS</a></li>
+                    <li><a href="#" class="token-link" onclick="loadLimit()">LIMIT EXCEEDED</a></li>
+                    <li><a href="#" class="token-link" onclick="loadCaps()">TOKEN CAPS</a></li>
+                    <li><a href="#" class="token-link" onclick="loadAdminChangePassword()">CHANGE ADMIN PASSWORD</a></li>
                     <li style="margin-top:14px;"><a href="/admin-logout" style="display:inline-block;background:#E74C3C;padding:8px 10px;border-radius:6px;color:#fff;text-decoration:none;">Logout</a></li>
                 </ul>
                 <div style="margin-top:auto;color:#bdc3c7;font-size:12px;padding-top:12px;">Server time: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}</div>
@@ -503,11 +500,10 @@ def admin():
     """
     return html
 
-
 # =========================
-# Admin endpoints for limit / caps / change password partials
+# Admin: limit view for a token (shows only limit-exceeded OTPs)
 # =========================
-@app.route('/admin/limit/<token>', methods=['GET', 'POST'])
+@app.route('/admin/limit/<token>', methods=['GET','POST'])
 def admin_limit(token):
     if not session.get("is_admin"):
         return redirect(url_for("admin_login"))
@@ -515,7 +511,6 @@ def admin_limit(token):
         return "Invalid token", 404
 
     if request.method == 'POST':
-        # allow deletion from limit-exceeded view
         if "delete_selected" in request.form:
             to_delete = [int(x) for x in request.form.getlist("otp_rows")]
             otp_data[token] = [e for i, e in enumerate(otp_data[token]) if not (i in to_delete and e.get("removed_reason") == "limit_exceeded")]
@@ -544,10 +539,11 @@ def admin_limit(token):
         """
         return partial
 
-    # direct page (not used by admin UI normally)
     return f"<html><body><pre>Limit Exceeded for {token}</pre></body></html>"
 
-
+# =========================
+# Admin: caps partial
+# =========================
 @app.route('/admin/caps', methods=['GET'])
 def admin_caps():
     if not session.get("is_admin"):
@@ -569,7 +565,6 @@ def admin_caps():
         return partial
     return redirect(url_for("admin"))
 
-
 @app.route('/admin/update-cap', methods=['POST'])
 def admin_update_cap():
     if not session.get("is_admin"):
@@ -581,7 +576,9 @@ def admin_update_cap():
         return redirect(url_for("admin_caps", embed=1))
     return "Invalid token", 400
 
-
+# =========================
+# Admin change password
+# =========================
 @app.route('/admin/change-password', methods=['GET', 'POST'])
 def admin_change_password():
     global ADMIN_PASSWORD
@@ -611,10 +608,8 @@ def admin_change_password():
         """
     return redirect(url_for("admin"))
 
-
 # =========================
-# Token login/dashboard
-# Supports embed=1 (partial HTML) and admin direct access
+# Token login/dashboard (token user)
 # =========================
 login_page_html = """
 <html><head><title>Login</title></head>
@@ -633,8 +628,7 @@ login_page_html = """
 </div></body></html>
 """
 
-
-@app.route('/login', methods=['GET', 'POST'])
+@app.route('/login', methods=['GET','POST'])
 def login():
     if request.method == 'POST':
         token = (request.form.get("token") or "").strip()
@@ -647,12 +641,10 @@ def login():
         return redirect(url_for("status", token=token))
     return render_template_string(login_page_html, error=None)
 
-
 @app.route('/logout')
 def logout():
     session.pop("token", None)
     return redirect(url_for("login"))
-
 
 @app.route('/change-password/<token>', methods=['POST'])
 def change_password(token):
@@ -669,39 +661,48 @@ def change_password(token):
     token_passwords[token] = new
     return redirect(url_for("status", token=token, msg="changed"))
 
-
-@app.route('/status/<token>', methods=['GET', 'POST'])
+@app.route('/status/<token>', methods=['GET','POST'])
 def status(token):
     # allow admin direct access OR token-login access
     if not (("token" in session and session["token"] == token) or session.get("is_admin")):
         return redirect(url_for("login"))
 
-    # OTP table rows
-    otp_rows = ""
-    for i, e in enumerate(otp_data[token]):
-        ts = e.get("timestamp", e.get("removed_at", datetime.now(IST))).strftime("%Y-%m-%d %H:%M:%S")
-        otp_rows += f"""
-        <tr>
-            <td>{e.get('sim_number','')}</td>
-            <td>{e.get('vehicle','')}</td>
-            <td>{e.get('otp','')}</td>
-            <td>{e.get('browser_id','')}</td>
-            <td>{ts}</td>
-            <td>{e.get('removed_reason','')}</td>
-        </tr>
-        """
-
-    # Login rows
-    login_rows = ""
-    for m, entries in login_sessions[token].items():
-        for e in entries:
-            login_rows += f"""
-            <tr>
-                <td>{m}</td>
-                <td>{e['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}</td>
-                <td>{e.get('source','')}</td>
-            </tr>
-            """
+    # handle deletes when embed=1 (partials) or full page form posts
+    if request.method == 'POST':
+        # OTP deletes
+        if "delete_selected_otps" in request.form:
+            to_delete = [int(x) for x in request.form.getlist("otp_rows")]
+            otp_data[token] = [e for i, e in enumerate(otp_data[token]) if i not in to_delete]
+            if request.args.get('embed') == '1':
+                return render_token_section_partial(token, 'otp')
+            else:
+                return redirect(url_for("status", token=token))
+        elif "delete_all_otps" in request.form:
+            otp_data[token].clear()
+            if request.args.get('embed') == '1':
+                return render_token_section_partial(token, 'otp')
+            else:
+                return redirect(url_for("status", token=token))
+        # Login deletes
+        elif "delete_selected_logins" in request.form:
+            to_delete = request.form.getlist("login_rows")
+            for x in to_delete:
+                m, idx = x.split(":")
+                idx = int(idx)
+                if m in login_sessions[token] and 0 <= idx < len(login_sessions[token][m]):
+                    login_sessions[token][m].pop(idx)
+                    if not login_sessions[token][m]:
+                        login_sessions[token].pop(m)
+            if request.args.get('embed') == '1':
+                return render_token_section_partial(token, 'login')
+            else:
+                return redirect(url_for("status", token=token))
+        elif "delete_all_logins" in request.form:
+            login_sessions[token].clear()
+            if request.args.get('embed') == '1':
+                return render_token_section_partial(token, 'login')
+            else:
+                return redirect(url_for("status", token=token))
 
     # If embed -> return partial per section
     if request.args.get('embed') == '1':
@@ -756,7 +757,6 @@ def status(token):
     </html>
     """
     return html
-
 
 # =========================
 # Run App
