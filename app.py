@@ -4,7 +4,7 @@ from datetime import datetime
 import zoneinfo, time
 
 app = Flask(__name__)
-app.secret_key = "SUPERSECRETKEY"   # 🔒 change this in production
+app.secret_key = "SUPERSECRETKEY"   # change this in production
 CORS(app)
 
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
@@ -33,7 +33,6 @@ browser_queues = {t: {} for t in PREDEFINED_TOKENS}
 login_sessions = {t: {} for t in PREDEFINED_TOKENS}
 
 BROWSER_STALE_SECONDS = float(10)
-
 
 # =========================
 # Helpers
@@ -115,7 +114,7 @@ def cleanup_stale_browsers_and_handle_pending(token, identifier):
                     mark_otp_removed_to_data(token, p, reason="stale_browser", browser_id=b)
 
 # =========================
-# APIs (open for clients)
+# API Endpoints (clients)
 # =========================
 @app.route('/api/receive-otp', methods=['POST'])
 def receive_otp():
@@ -270,7 +269,7 @@ def login_found():
         return jsonify({"status": "not_found", "mobile_number": mobile_number}), 200
 
 # =========================
-# Admin Login + Dashboard (full modern UI)
+# Admin Login + Dashboard
 # =========================
 admin_login_page = """
 <html><head><title>Admin Login</title></head>
@@ -308,9 +307,9 @@ def admin_logout():
     session.pop("is_admin", None)
     return redirect(url_for("admin_login"))
 
-# Partial renderer for token embed (used by admin)
+# Helper to render token partials (used by both admin embed and token dashboard)
 def render_token_section_partial(token, section):
-    # OTP section
+    # OTP section with delete forms (works when embedded)
     if section == "otp":
         rows = ""
         for i, e in enumerate(otp_data[token]):
@@ -333,7 +332,7 @@ def render_token_section_partial(token, section):
         """
         return partial
 
-    # Login section
+    # Login section with delete forms
     if section == "login":
         rows = ""
         for m, entries in login_sessions[token].items():
@@ -356,13 +355,14 @@ def render_token_section_partial(token, section):
         """
         return partial
 
-    # Change password for token (admin can present this, but action is via admin/change-token-password)
+    # Change password partial (for embed and token)
     if section == "change_password":
         partial = f"""
         <div class="card">
             <h3>Change Token Password - {token}</h3>
-            <form method="POST" action="/admin/change-token-password/{token}">
-                <label>New Password</label><input type="password" name="new_password" required style="padding:8px;margin-top:6px;width:100%;border-radius:6px;border:1px solid #ddd;">
+            <form method="POST" action="/change-password/{token}">
+                <label>Current Password</label><input type="password" name="current_password" required style="padding:8px;margin-top:6px;width:100%;border-radius:6px;border:1px solid #ddd;">
+                <label style="margin-top:8px">New Password</label><input type="password" name="new_password" required style="padding:8px;margin-top:6px;width:100%;border-radius:6px;border:1px solid #ddd;">
                 <label style="margin-top:8px">Confirm Password</label><input type="password" name="confirm_password" required style="padding:8px;margin-top:6px;width:100%;border-radius:6px;border:1px solid #ddd;">
                 <div style="margin-top:10px;"><button type="submit" style="background:#27AE60;color:white;padding:8px 12px;border:none;border-radius:6px;">Change</button></div>
             </form>
@@ -372,6 +372,7 @@ def render_token_section_partial(token, section):
 
     return "<div class='card'><p>Invalid section</p></div>"
 
+# Admin endpoint to change token password
 @app.route('/admin/change-token-password/<token>', methods=['POST'])
 def admin_change_token_password(token):
     if not session.get("is_admin"):
@@ -385,12 +386,14 @@ def admin_change_token_password(token):
     token_passwords[token] = new
     return f"Password for {token} updated."
 
+# =========================
+# Admin main UI
+# =========================
 @app.route('/admin', methods=['GET'])
 def admin():
     if not session.get("is_admin"):
         return redirect(url_for("admin_login"))
 
-    # token list (used when admin clicks "TOKENS")
     tokens_js_list = "[" + ",".join([f"'{t}'" for t in PREDEFINED_TOKENS]) + "]"
 
     html = f"""
@@ -402,72 +405,74 @@ def admin():
             .app {{ display:flex; min-height:100vh; }}
             .sidebar {{ width:260px; background:#2C3E50; color:white; padding:22px; box-sizing:border-box; display:flex; flex-direction:column; }}
             .sidebar h2 {{ margin:0 0 14px; font-size:20px; text-align:center; color:#fff; }}
-            .sidebar .section-title {{ margin-top:12px; font-weight:700; color:#ecf0f1; }}
-            .sidebar ul {{ list-style:none; padding:0; margin:8px 0; }}
-            .sidebar a.token-link {{ display:block; padding:8px 10px; background:rgba(255,255,255,0.02); border-radius:6px; color:#fff; text-decoration:none; margin-bottom:6px; }}
+            .sidebar a.menu-link {{ display:block; padding:10px; margin-bottom:8px; color:#fff; text-decoration:none; background:rgba(255,255,255,0.03); border-radius:6px; }}
             .main {{ flex-grow:1; padding:24px; }}
             .card {{ background:white; padding:16px; border-radius:8px; box-shadow:0px 4px 18px rgba(0,0,0,0.06); margin-bottom:20px; }}
             table {{ width:100%; border-collapse:collapse; }}
             table th {{ background:#2980B9; color:white; padding:10px; text-align:left; }}
             table td {{ padding:10px; border-bottom:1px solid #eee; }}
-            .muted {{ color:#666; font-size:13px; }}
-            button.primary {{ background:#2980B9; color:white; border:none; padding:8px 12px; border-radius:6px; cursor:pointer; }}
-            .topbar {{ display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; }}
-            .token-tile {{ padding:12px;background:#ecf0f1;border-radius:6px;width:160px;text-align:center;cursor:pointer;font-weight:700;color:#2C3E50; }}
             .tokens-grid {{ display:flex; gap:12px; flex-wrap:wrap; }}
+            .token-tile {{ padding:12px;background:#ecf0f1;border-radius:6px;width:160px;text-align:center;cursor:pointer;font-weight:700;color:#2C3E50; }}
+            .muted {{ color:#666; font-size:13px; }}
         </style>
         <script>
             function loadTokens() {{
                 var tokens = {tokens_js_list};
                 var html = "<div class='card'><h3>Tokens</h3><div class='tokens-grid'>";
                 tokens.forEach(function(t) {{
-                    html += "<div class='token-tile' onclick=\\\"loadToken('" + t + "','otp')\\\">" + t + "</div>";
+                    html += "<div class='token-tile' onclick=\\"loadTokenFull('" + t + "')\\">" + t + "</div>";
                 }});
                 html += "</div></div>";
                 document.getElementById('content_panel').innerHTML = html;
             }}
-            function loadToken(token, section) {{
-                var url = '/status/' + token + '?embed=1&section=' + section;
-                document.getElementById('content_panel').innerHTML = '<div class="card"><p>Loading...</p></div>';
-                fetch(url, {{ credentials: 'same-origin' }})
+            function loadTokenFull(token) {{
+                // load the full token dashboard (embed=full) into right panel
+                document.getElementById('content_panel').innerHTML = "<div class='card'><p>Loading token dashboard...</p></div>";
+                fetch('/status/' + token + '?embed=full', {{ credentials: 'same-origin' }})
                     .then(function(r){{ return r.text(); }})
                     .then(function(html){{ document.getElementById('content_panel').innerHTML = html; }})
-                    .catch(function(e){{ document.getElementById('content_panel').innerHTML = '<div class="card" style="color:red">Failed to load</div>'; }});
+                    .catch(function(e){{ document.getElementById('content_panel').innerHTML = "<div class='card' style='color:red'>Failed to load</div>"; }});
             }}
-            function loadLimit(token) {{
-                var url = '/admin/limit/' + token + '?embed=1';
-                document.getElementById('content_panel').innerHTML = '<div class="card"><p>Loading...</p></div>';
-                fetch(url, {{ credentials: 'same-origin' }})
+            function loadLimit() {{
+                var tokens = {tokens_js_list};
+                var html = "<div class='card'><h3>Limit Exceeded - Select Token</h3><div class='tokens-grid'>";
+                tokens.forEach(function(t) {{
+                    html += "<div class='token-tile' onclick=\\"loadLimitToken('" + t + "')\\">" + t + "</div>";
+                }});
+                html += "</div></div>";
+                document.getElementById('content_panel').innerHTML = html;
+            }}
+            function loadLimitToken(token) {{
+                document.getElementById('content_panel').innerHTML = "<div class='card'><p>Loading limit-exceeded...</p></div>";
+                fetch('/admin/limit/' + token + '?embed=1', {{ credentials: 'same-origin' }})
                     .then(function(r){{ return r.text(); }})
                     .then(function(html){{ document.getElementById('content_panel').innerHTML = html; }})
-                    .catch(function(e){{ document.getElementById('content_panel').innerHTML = '<div class="card" style="color:red">Failed to load</div>'; }});
+                    .catch(function(e){{ document.getElementById('content_panel').innerHTML = "<div class='card' style='color:red'>Failed to load</div>"; }});
             }}
             function loadCaps() {{
-                var url = '/admin/caps?embed=1';
-                document.getElementById('content_panel').innerHTML = '<div class="card"><p>Loading...</p></div>';
-                fetch(url, {{ credentials: 'same-origin' }})
+                document.getElementById('content_panel').innerHTML = "<div class='card'><p>Loading caps...</p></div>";
+                fetch('/admin/caps?embed=1', {{ credentials: 'same-origin' }})
                     .then(function(r){{ return r.text(); }})
                     .then(function(html){{ document.getElementById('content_panel').innerHTML = html; }})
-                    .catch(function(e){{ document.getElementById('content_panel').innerHTML = '<div class="card" style="color:red">Failed to load</div>'; }});
+                    .catch(function(e){{ document.getElementById('content_panel').innerHTML = "<div class='card' style='color:red'>Failed to load</div>"; }});
             }}
             function loadAdminChangePassword() {{
-                var url = '/admin/change-password?embed=1';
-                document.getElementById('content_panel').innerHTML = '<div class="card"><p>Loading...</p></div>';
-                fetch(url, {{ credentials: 'same-origin' }})
+                document.getElementById('content_panel').innerHTML = "<div class='card'><p>Loading...</p></div>";
+                fetch('/admin/change-password?embed=1', {{ credentials: 'same-origin' }})
                     .then(function(r){{ return r.text(); }})
                     .then(function(html){{ document.getElementById('content_panel').innerHTML = html; }})
-                    .catch(function(e){{ document.getElementById('content_panel').innerHTML = '<div class="card" style="color:red">Failed to load</div>'; }});
+                    .catch(function(e){{ document.getElementById('content_panel').innerHTML = "<div class='card' style='color:red'>Failed to load</div>"; }});
             }}
-            function loadProcessed(token) {{
-                var url = '/admin/processed/' + token + '?embed=1';
-                document.getElementById('content_panel').innerHTML = '<div class="card"><p>Loading...</p></div>';
-                fetch(url, {{ credentials: 'same-origin' }})
-                    .then(function(r){{ return r.text(); }})
-                    .then(function(html){{ document.getElementById('content_panel').innerHTML = html; }})
-                    .catch(function(e){{ document.getElementById('content_panel').innerHTML = '<div class="card" style="color:red">Failed to load</div>'; }});
+            // server time updater
+            function updateServerTime() {{
+                // request server time or display client's current IST time textually
+                var now = new Date();
+                document.getElementById('server_time').innerText = now.toLocaleString();
             }}
+            setInterval(updateServerTime, 1000);
             window.onload = function() {{
-                document.getElementById('content_panel').innerHTML = '<div class=\"card\"><h3>Welcome, Admin</h3><p class=\"muted\">Click \"TOKENS\" to view tokens or use other sidebar actions.</p></div>';
+                document.getElementById('content_panel').innerHTML = "<div class='card'><h3>Welcome, Admin</h3><p class='muted'>Click TOKENS or other actions on the left to fetch fresh data into this panel.</p></div>";
+                updateServerTime();
             }};
         </script>
     </head>
@@ -475,22 +480,17 @@ def admin():
         <div class="app">
             <div class="sidebar">
                 <h2>ADMIN</h2>
-
-                <div class="section-title">MENU</div>
-                <ul>
-                    <li><a href="#" class="token-link" onclick="loadTokens()">TOKENS</a></li>
-                    <li><a href="#" class="token-link" onclick="loadLimit('{PREDEFINED_TOKENS[0]}')">LIMIT EXCEEDED</a></li>
-                    <li><a href="#" class="token-link" onclick="loadCaps()">TOKEN CAPS</a></li>
-                    <li><a href="#" class="token-link" onclick="loadAdminChangePassword()">CHANGE ADMIN PASSWORD</a></li>
-                    <li style="margin-top:14px;"><a href="/admin-logout" style="display:inline-block;background:#E74C3C;padding:8px 10px;border-radius:6px;color:#fff;text-decoration:none;">Logout</a></li>
-                </ul>
-                <div style="margin-top:auto;color:#bdc3c7;font-size:12px;padding-top:12px;">Server time: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}</div>
+                <a href="#" class="menu-link" onclick="loadTokens()">TOKENS</a>
+                <a href="#" class="menu-link" onclick="loadLimit()">LIMIT EXCEEDED</a>
+                <a href="#" class="menu-link" onclick="loadCaps()">TOKEN CAPS</a>
+                <a href="#" class="menu-link" onclick="loadAdminChangePassword()">CHANGE ADMIN PASSWORD</a>
+                <a href="/admin-logout" class="menu-link" style="background:#E74C3C;">LOGOUT</a>
+                <div style="margin-top:auto;color:#bdc3c7;font-size:12px;padding-top:12px;">Server time: <span id="server_time"></span></div>
             </div>
-
             <div class="main">
                 <div id="content_panel" class="card">
                     <h3>Welcome, Admin</h3>
-                    <p class="muted">Click a token or a section from the left to load fresh data here (all data is fetched each time).</p>
+                    <p class="muted">Use the left menu to view tokens, caps and limit-exceeded items. All panels fetch fresh data when clicked.</p>
                 </div>
             </div>
         </div>
@@ -500,7 +500,7 @@ def admin():
     return html
 
 # =========================
-# Admin: limit view for a token (shows only limit-exceeded OTPs)
+# Admin: limit view and delete (embed=1 partial)
 # =========================
 @app.route('/admin/limit/<token>', methods=['GET','POST'])
 def admin_limit(token):
@@ -515,7 +515,12 @@ def admin_limit(token):
             otp_data[token] = [e for i, e in enumerate(otp_data[token]) if not (i in to_delete and e.get("removed_reason") == "limit_exceeded")]
         elif "delete_all" in request.form:
             otp_data[token] = [e for e in otp_data[token] if e.get("removed_reason") != "limit_exceeded"]
-        return redirect(url_for("admin_limit", token=token))
+        # After POST, if embedded: return updated partial
+        if request.args.get("embed") == "1":
+            # fall through to render partial
+            pass
+        else:
+            return redirect(url_for("admin_limit", token=token))
 
     rows = ""
     for i, e in enumerate(otp_data[token]):
@@ -527,12 +532,15 @@ def admin_limit(token):
         partial = f"""
         <div class="card">
             <h3>Limit Exceeded - {token}</h3>
-            <form method="POST">
+            <form method="POST" action="/admin/limit/{token}?embed=1">
                 <table style="width:100%;border-collapse:collapse;">
                     <tr style="background:#E74C3C;color:white;"><th>Select</th><th>Mobile</th><th>Vehicle</th><th>OTP</th><th>Browser</th><th>Date</th></tr>
                     {rows if rows else '<tr><td colspan="6" style="padding:12px">No limit-exceeded OTPs</td></tr>'}
                 </table>
-                <div style="margin-top:10px;"><button type="submit" name="delete_selected" class="primary">Delete Selected</button> <button type="submit" name="delete_all" class="primary" style="background:#c0392b;">Delete All</button></div>
+                <div style="margin-top:10px;">
+                    <button type="submit" name="delete_selected" style="padding:8px 10px;background:#e67e22;color:white;border:none;border-radius:6px;">Delete Selected</button>
+                    <button type="submit" name="delete_all" style="padding:8px 10px;background:#c0392b;color:white;border:none;border-radius:6px;margin-left:8px;">Delete All</button>
+                </div>
             </form>
         </div>
         """
@@ -541,7 +549,7 @@ def admin_limit(token):
     return f"<html><body><pre>Limit Exceeded for {token}</pre></body></html>"
 
 # =========================
-# Admin: caps partial + processed mobiles partial
+# Admin: caps view (embed)
 # =========================
 @app.route('/admin/caps', methods=['GET'])
 def admin_caps():
@@ -551,7 +559,7 @@ def admin_caps():
         rows = ""
         for t in PREDEFINED_TOKENS:
             rows += f"<tr><td>{t}</td><td style='text-align:center'>{len(token_processed_mobiles[t])}</td><td style='text-align:center'>{token_mobile_caps[t] if token_mobile_caps[t] is not None else 'Unlimited'}</td>"
-            rows += f"<td><form method='POST' action='/admin/update-cap' style='display:inline-block'><input type='hidden' name='token' value='{t}'><input type='number' name='cap' placeholder='Enter cap' style='padding:6px;width:120px;margin-right:6px;'><button type='submit' class='primary'>Set</button></form> <button onclick=\"fetch('/admin/processed/{t}?embed=1').then(r=>r.text()).then(h=>document.getElementById('processed_panel').innerHTML=h)\" class='primary' style='background:#27ae60;margin-left:8px;'>Processed</button></td></tr>"
+            rows += f"<td><form method='POST' action='/admin/update-cap' style='display:inline-block'><input type='hidden' name='token' value='{t}'><input type='number' name='cap' placeholder='Enter cap' style='padding:6px;width:120px;margin-right:6px;'><button type='submit' class='primary' style='padding:6px 10px;background:#2980B9;color:white;border:none;border-radius:4px;'>Set</button></form></td></tr>"
         partial = f"""
         <div class="card">
             <h3>Token Mobile Caps</h3>
@@ -559,6 +567,11 @@ def admin_caps():
                 <tr style="background:#2980B9;color:white;"><th>Token</th><th>Processed Mobiles</th><th>Cap</th><th>Action</th></tr>
                 {rows}
             </table>
+            <h4 style="margin-top:12px;">Processed mobiles</h4>
+            <p class="muted">Click "Show processed mobiles" for a token to view the list of processed mobile numbers.</p>
+            <div style="display:flex;gap:8px;margin-top:8px;">
+                {"".join([f"<button onclick=\\\"fetch('/admin/processed/{t}?embed=1').then(r=>r.text()).then(h=>document.getElementById('processed_panel').innerHTML=h)\\\" style=\\\"padding:8px 10px;background:#ecf0f1;border-radius:6px;border:none;cursor:pointer;\\\">Show processed {t}</button>" for t in PREDEFINED_TOKENS])}
+            </div>
             <div id="processed_panel" style="margin-top:12px;"></div>
         </div>
         """
@@ -580,31 +593,35 @@ def admin_update_cap():
 def admin_processed(token):
     if not session.get("is_admin"):
         return redirect(url_for("admin_login"))
+    if token not in PREDEFINED_TOKENS:
+        return "Invalid token", 404
     if request.args.get("embed") == "1":
         rows = ""
-        # Provide a summarized view with timestamp + count of OTPs delivered for that mobile (from otp_data)
-        for m in sorted(token_processed_mobiles[token]):
-            # count OTP records in otp_data (delivered or removed) with this sim_number
-            count = sum(1 for e in otp_data[token] if e.get("sim_number") == m) + sum(1 for e in mobile_otps[token] if e.get("sim_number") == m)
-            first_ts_entries = [e for e in otp_data[token] if e.get("sim_number") == m]
-            first_ts = first_ts_entries[0].get("timestamp").strftime("%Y-%m-%d %H:%M:%S") if first_ts_entries else ""
-            rows += f"<tr><td>{m}</td><td style='text-align:center'>{count}</td><td style='text-align:center'>{first_ts}</td></tr>"
+        for m in token_processed_mobiles[token]:
+            # find OTPs related to m in otp_data for display (if present)
+            related = [e for e in otp_data[token] if e.get("sim_number")==m]
+            if related:
+                for e in related:
+                    ts = e.get("timestamp", e.get("removed_at", datetime.now(IST))).strftime("%Y-%m-%d %H:%M:%S")
+                    rows += f"<tr><td>{m}</td><td>{e.get('otp','')}</td><td>{e.get('removed_reason','')}</td><td>{ts}</td></tr>"
+            else:
+                rows += f"<tr><td>{m}</td><td></td><td></td><td></td></tr>"
         partial = f"""
-        <div class="card">
-            <h4>Processed Mobiles - {token}</h4>
+        <div style="margin-top:10px;">
+            <h4>Processed mobiles - {token}</h4>
             <table style="width:100%;border-collapse:collapse;">
-                <tr style="background:#7f8c8d;color:white;"><th>Mobile</th><th>Processed Count</th><th>First Seen</th></tr>
-                {rows if rows else '<tr><td colspan="3" style="padding:12px">No processed mobiles yet</td></tr>'}
+                <tr style="background:#2980B9;color:white;"><th>Mobile</th><th>OTP</th><th>Reason</th><th>Date</th></tr>
+                {rows if rows else '<tr><td colspan="4" style="padding:12px">No processed mobiles</td></tr>'}
             </table>
         </div>
         """
         return partial
-    return redirect(url_for("admin"))
+    return "Not allowed", 403
 
 # =========================
-# Admin change password
+# Admin change password panel (embed)
 # =========================
-@app.route('/admin/change-password', methods=['GET', 'POST'])
+@app.route('/admin/change-password', methods=['GET','POST'])
 def admin_change_password():
     global ADMIN_PASSWORD
     if not session.get("is_admin"):
@@ -627,7 +644,7 @@ def admin_change_password():
                 <label>Current Password</label><input type="password" name="current_password" required style="padding:8px;width:100%;border-radius:6px;border:1px solid #ddd;"><br>
                 <label>New Password</label><input type="password" name="new_password" required style="padding:8px;width:100%;border-radius:6px;border:1px solid #ddd;"><br>
                 <label>Confirm Password</label><input type="password" name="confirm_password" required style="padding:8px;width:100%;border-radius:6px;border:1px solid #ddd;"><br>
-                <div style="margin-top:8px;"><button type="submit" class="primary">Change Password</button></div>
+                <div style="margin-top:8px;"><button type="submit" class="primary" style="padding:8px 10px;background:#2980B9;color:white;border:none;border-radius:6px;">Change Password</button></div>
             </form>
         </div>
         """
@@ -635,7 +652,6 @@ def admin_change_password():
 
 # =========================
 # Token login/dashboard
-# Supports embed=1 (partial HTML) and admin direct access
 # =========================
 login_page_html = """
 <html><head><title>Login</title></head>
@@ -687,6 +703,9 @@ def change_password(token):
     token_passwords[token] = new
     return redirect(url_for("status", token=token, msg="changed"))
 
+# =========================
+# Token dashboard / partials / embed=full (for admin full dashboard)
+# =========================
 @app.route('/status/<token>', methods=['GET','POST'])
 def status(token):
     # allow admin direct access OR token-login access
@@ -730,12 +749,28 @@ def status(token):
             else:
                 return redirect(url_for("status", token=token))
 
-    # If embed -> return partial per section
+    # If embed=1 return partial for requested section
     if request.args.get('embed') == '1':
         section = request.args.get('section', 'otp')
         return render_token_section_partial(token, section)
 
-    # Full token dashboard page (for token user)
+    # If embed=full -> return full token dashboard (all sections) as a single panel (no sidebar)
+    if request.args.get('embed') == 'full':
+        otp_partial = render_token_section_partial(token, 'otp')
+        login_partial = render_token_section_partial(token, 'login')
+        change_partial = render_token_section_partial(token, 'change_password')
+        # Combine into a single right-panel HTML
+        full_embed = f"""
+        <div class="card">
+            <h2 style="margin-top:0">Token Dashboard — {token}</h2>
+            {otp_partial}
+            {login_partial}
+            {change_partial}
+        </div>
+        """
+        return full_embed
+
+    # Full token dashboard page (for token user) with its own sidebar and dynamic loading of partials
     html = f"""
     <html>
     <head>
