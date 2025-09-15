@@ -427,6 +427,69 @@ def admin_token_login_details(token):
         return partial
     return redirect(url_for("admin"))
 
+# Admin: master reset panel
+@app.route('/admin/master-reset', methods=['GET', 'POST'])
+def admin_master_reset():
+    if not session.get("is_admin"):
+        return redirect(url_for("admin_login"))
+
+    if request.method == 'POST':
+        reset_otp_data = 'otp_data' in request.form
+        reset_login_sessions = 'login_sessions' in request.form
+        reset_processed_mobiles = 'processed_mobiles' in request.form
+        reset_mobile_otps = 'mobile_otps' in request.form
+        reset_vehicle_otps = 'vehicle_otps' in request.form
+        reset_browser_queues = 'browser_queues' in request.form
+        reset_all = 'reset_all' in request.form
+
+        if reset_all:
+            for token in PREDEFINED_TOKENS:
+                otp_data[token].clear()
+                login_sessions[token].clear()
+                token_processed_mobiles[token].clear()
+                mobile_otps[token].clear()
+                vehicle_otps[token].clear()
+                browser_queues[token].clear()
+                client_sessions[token].clear()
+        else:
+            for token in PREDEFINED_TOKENS:
+                if reset_otp_data:
+                    otp_data[token].clear()
+                if reset_login_sessions:
+                    login_sessions[token].clear()
+                if reset_processed_mobiles:
+                    token_processed_mobiles[token].clear()
+                if reset_mobile_otps:
+                    mobile_otps[token].clear()
+                if reset_vehicle_otps:
+                    vehicle_otps[token].clear()
+                if reset_browser_queues:
+                    browser_queues[token].clear()
+                    client_sessions[token].clear()  # Clear client_sessions if browser_queues is reset
+        return redirect(url_for("admin"))
+
+    if request.args.get("embed") == "1":
+        partial = """
+        <div class="card">
+            <h3>Master Reset</h3>
+            <p class="muted">Select data to reset across all tokens. This action cannot be undone.</p>
+            <form method="POST" action="/admin/master-reset" onsubmit="return confirm('Are you sure you want to reset the selected data? This cannot be undone.');">
+                <label><input type="checkbox" name="otp_data"> OTP Data (all delivered/removed OTPs)</label><br>
+                <label><input type="checkbox" name="login_sessions"> Login Detections</label><br>
+                <label><input type="checkbox" name="processed_mobiles"> Processed Mobiles</label><br>
+                <label><input type="checkbox" name="mobile_otps"> Mobile OTPs (pending)</label><br>
+                <label><input type="checkbox" name="vehicle_otps"> Vehicle OTPs (pending)</label><br>
+                <label><input type="checkbox" name="browser_queues"> Browser Queues & Client Sessions</label><br>
+                <label><input type="checkbox" name="reset_all"> Reset All Data</label><br>
+                <div style="margin-top:10px;">
+                    <button type="submit" style="padding:8px 10px;background:#c0392b;color:white;border:none;border-radius:6px;">Reset Selected</button>
+                </div>
+            </form>
+        </div>
+        """
+        return partial
+    return redirect(url_for("admin"))
+
 # =========================
 # Admin main UI
 # =========================
@@ -468,7 +531,6 @@ def admin():
                 document.getElementById('content_panel').innerHTML = html;
             }}
             function loadTokenFull(token) {{
-                // load the full token dashboard (admin variant) into right panel
                 document.getElementById('content_panel').innerHTML = "<div class='card'><p>Loading token dashboard...</p></div>";
                 fetch('/status/' + token + '?embed=admin_full', {{ credentials: 'same-origin' }})
                     .then(function(r){{ return r.text(); }})
@@ -505,6 +567,13 @@ def admin():
                     .then(function(html){{ document.getElementById('content_panel').innerHTML = html; }})
                     .catch(function(e){{ document.getElementById('content_panel').innerHTML = "<div class='card' style='color:red'>Failed to load</div>"; }});
             }}
+            function loadMasterReset() {{
+                document.getElementById('content_panel').innerHTML = "<div class='card'><p>Loading...</p></div>";
+                fetch('/admin/master-reset?embed=1', {{ credentials: 'same-origin' }})
+                    .then(function(r){{ return r.text(); }})
+                    .then(function(html){{ document.getElementById('content_panel').innerHTML = html; }})
+                    .catch(function(e){{ document.getElementById('content_panel').innerHTML = "<div class='card' style='color:red'>Failed to load</div>"; }});
+            }}
             // server time updater (client-side)
             function updateServerTime() {{
                 var now = new Date();
@@ -535,13 +604,14 @@ def admin():
                 <a href="#" class="menu-link" onclick="loadLimit()">LIMIT EXCEEDED</a>
                 <a href="#" class="menu-link" onclick="loadCaps()">TOKEN CAPS</a>
                 <a href="#" class="menu-link" onclick="loadAdminChangePassword()">CHANGE ADMIN PASSWORD</a>
+                <a href="#" class="menu-link" onclick="loadMasterReset()">MASTER RESET</a>
                 <a href="/admin-logout" class="menu-link" style="background:#E74C3C;">LOGOUT</a>
                 <div style="margin-top:auto;color:#bdc3c7;font-size:12px;padding-top:12px;">Server time: <span id="server_time"></span></div>
             </div>
             <div class="main">
                 <div id="content_panel" class="card">
                     <h3>Welcome, Admin</h3>
-                    <p class="muted">Use the left menu to view tokens, caps and limit-exceeded items. All panels fetch fresh data when clicked.</p>
+                    <p class="muted">Use the left menu to view tokens, caps, limit-exceeded items, or reset data. All panels fetch fresh data when clicked.</p>
                 </div>
             </div>
         </div>
@@ -762,14 +832,10 @@ def status(token):
             otp_data[token] = [e for i, e in enumerate(otp_data[token]) if i not in to_delete]
             if request.args.get('embed') == '1':
                 return render_token_section_partial(token, 'otp')
-            else:
-                return redirect(url_for("status", token=token))
         elif "delete_all_otps" in request.form:
             otp_data[token].clear()
             if request.args.get('embed') == '1':
                 return render_token_section_partial(token, 'otp')
-            else:
-                return redirect(url_for("status", token=token))
         # Login deletes
         elif "delete_selected_logins" in request.form:
             to_delete = request.form.getlist("login_rows")
@@ -782,14 +848,81 @@ def status(token):
                         login_sessions[token].pop(m)
             if request.args.get('embed') == '1':
                 return render_token_section_partial(token, 'login')
-            else:
-                return redirect(url_for("status", token=token))
         elif "delete_all_logins" in request.form:
             login_sessions[token].clear()
             if request.args.get('embed') == '1':
                 return render_token_section_partial(token, 'login')
+
+        # For non-embed POST requests (full page), re-render the dashboard
+        if request.args.get('embed') != '1':
+            if request.args.get('embed') == 'admin_full':
+                # Admin full dashboard
+                token_full_html = f"""
+                <div style="display:flex;gap:18px;align-items:flex-start;">
+                    <div style="width:220px;background:#2C3E50;color:#fff;padding:12px;border-radius:8px;">
+                        <h3 style="margin:6px 0 12px;text-align:center;">{token}</h3>
+                        <button style="width:100%;padding:10px;margin-bottom:8px;border:none;border-radius:6px;background:#3498DB;color:white;cursor:pointer;" onclick="document.getElementById('token_right_panel').innerHTML='<div class=\\'card\\'><p>Loading...</p></div>';fetch('/status/{token}?embed=1&section=otp').then(r=>r.text()).then(h=>document.getElementById('token_right_panel').innerHTML=h);">OTP DATA</button>
+                        <button style="width:100%;padding:10px;margin-bottom:8px;border:none;border-radius:6px;background:#3498DB;color:white;cursor:pointer;" onclick="document.getElementById('token_right_panel').innerHTML='<div class=\\'card\\'><p>Loading...</p></div>';fetch('/status/{token}?embed=1&section=login').then(r=>r.text()).then(h=>document.getElementById('token_right_panel').innerHTML=h);">LOGIN DETECTIONS</button>
+                        <button style="width:100%;padding:10px;margin-bottom:8px;border:none;border-radius:6px;background:#27AE60;color:white;cursor:pointer;" onclick="document.getElementById('token_right_panel').innerHTML='<div class=\\'card\\'><p>Loading...</p></div>';fetch('/status/{token}?embed=1&section=change_password').then(r=>r.text()).then(h=>document.getElementById('token_right_panel').innerHTML=h);">CHANGE PASSWORD</button>
+                        <!-- admin-only: show login details -->
+                        <button style="width:100%;padding:10px;margin-bottom:8px;border:none;border-radius:6px;background:#9b59b6;color:white;cursor:pointer;" onclick="document.getElementById('token_right_panel').innerHTML='<div class=\\'card\\'><p>Loading login details...</p></div>';fetch('/admin/token-login-details/{token}?embed=1').then(r=>r.text()).then(h=>document.getElementById('token_right_panel').innerHTML=h);">LOGIN DETAILS</button>
+                    </div>
+                    <div style="flex:1;" id="token_right_panel">
+                        <!-- initial load OTP partial -->
+                        {render_token_section_partial(token,'otp')}
+                    </div>
+                </div>
+                """
+                return token_full_html
             else:
-                return redirect(url_for("status", token=token))
+                # Token user dashboard
+                html = f"""
+                <html>
+                <head>
+                    <title>{token} Dashboard</title>
+                    <style>
+                        body {{ font-family: 'Segoe UI', sans-serif; background:#f9f9f9; margin:0; }}
+                        h2 {{ margin:20px 0; text-align:center; color:#2C3E50; }}
+                        .container {{ display:flex; min-height:100vh; }}
+                        .sidebar {{ width:220px; background:#2C3E50; padding:20px; color:white; }}
+                        .sidebar button {{ margin-bottom:15px; width:100%; padding:10px; border:none; background:#3498DB; color:white; cursor:pointer; border-radius:6px; font-weight:700; }}
+                        .content {{ flex-grow:1; padding:30px; }}
+                        .card {{ background:white; padding:16px; border-radius:8px; box-shadow:0px 4px 14px rgba(0,0,0,0.06); }}
+                        table {{ border-collapse: collapse; width:100%; background:white; }}
+                        th, td {{ border:1px solid #ddd; padding:8px; }}
+                        th {{ background:#2980B9; color:white; }}
+                    </style>
+                    <script>
+                        function loadSection(section) {{
+                            var url = window.location.pathname + '?embed=1&section=' + section;
+                            document.getElementById('right_panel').innerHTML = '<div class="card"><p>Loading...</p></div>';
+                            fetch(url, {{ credentials: 'same-origin' }})
+                                .then(function(r){{ return r.text(); }})
+                                .then(function(html){{ document.getElementById('right_panel').innerHTML = html; }})
+                                .catch(function(e){{ document.getElementById('right_panel').innerHTML = '<div class="card" style="color:red">Failed to load</div>'; }});
+                        }}
+                        window.onload = function() {{ loadSection('otp'); }}
+                    </script>
+                </head>
+                <body>
+                    <h2>KM OTP Dashboard ({token})</h2>
+                    <div class="container">
+                        <div class="sidebar">
+                            <button onclick="loadSection('otp')">OTP DATA</button>
+                            <button onclick="loadSection('login')">LOGIN DETECTIONS</button>
+                            <button onclick="loadSection('change_password')">CHANGE PASSWORD</button>
+                            <a href="/logout" style="color:white;text-decoration:none;"><button>LOGOUT</button></a>
+                        </div>
+                        <div class="content">
+                            <div id="right_panel" class="card">
+                                <!-- dynamic content will load here -->
+                            </div>
+                        </div>
+                    </div>
+                </body>
+                </html>
+                """
+                return html
 
     # If embed=1 return partial for requested section
     if request.args.get('embed') == '1':
@@ -798,7 +931,6 @@ def status(token):
 
     # If embed=admin_full -> return full token dashboard (with token sidebar) for admin
     if request.args.get('embed') == 'admin_full':
-        # Build HTML for token's full dashboard including token-style sidebar, but admin-only extra button "LOGIN DETAILS"
         token_full_html = f"""
         <div style="display:flex;gap:18px;align-items:flex-start;">
             <div style="width:220px;background:#2C3E50;color:#fff;padding:12px;border-radius:8px;">
@@ -806,11 +938,9 @@ def status(token):
                 <button style="width:100%;padding:10px;margin-bottom:8px;border:none;border-radius:6px;background:#3498DB;color:white;cursor:pointer;" onclick="document.getElementById('token_right_panel').innerHTML='<div class=\\'card\\'><p>Loading...</p></div>';fetch('/status/{token}?embed=1&section=otp').then(r=>r.text()).then(h=>document.getElementById('token_right_panel').innerHTML=h);">OTP DATA</button>
                 <button style="width:100%;padding:10px;margin-bottom:8px;border:none;border-radius:6px;background:#3498DB;color:white;cursor:pointer;" onclick="document.getElementById('token_right_panel').innerHTML='<div class=\\'card\\'><p>Loading...</p></div>';fetch('/status/{token}?embed=1&section=login').then(r=>r.text()).then(h=>document.getElementById('token_right_panel').innerHTML=h);">LOGIN DETECTIONS</button>
                 <button style="width:100%;padding:10px;margin-bottom:8px;border:none;border-radius:6px;background:#27AE60;color:white;cursor:pointer;" onclick="document.getElementById('token_right_panel').innerHTML='<div class=\\'card\\'><p>Loading...</p></div>';fetch('/status/{token}?embed=1&section=change_password').then(r=>r.text()).then(h=>document.getElementById('token_right_panel').innerHTML=h);">CHANGE PASSWORD</button>
-                <!-- admin-only: show login details -->
                 <button style="width:100%;padding:10px;margin-bottom:8px;border:none;border-radius:6px;background:#9b59b6;color:white;cursor:pointer;" onclick="document.getElementById('token_right_panel').innerHTML='<div class=\\'card\\'><p>Loading login details...</p></div>';fetch('/admin/token-login-details/{token}?embed=1').then(r=>r.text()).then(h=>document.getElementById('token_right_panel').innerHTML=h);">LOGIN DETAILS</button>
             </div>
             <div style="flex:1;" id="token_right_panel">
-                <!-- initial load OTP partial -->
                 {render_token_section_partial(token,'otp')}
             </div>
         </div>
