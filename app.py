@@ -268,6 +268,27 @@ def login_found():
     else:
         return jsonify({"status": "not_found", "mobile_number": mobile_number}), 200
 
+@app.route('/api/check-login-status', methods=['GET'])
+def check_login_status():
+    """
+    Endpoint to return an HTML page with 'already logged in' at the top-left corner.
+    No validation or logic, just returns the HTML response.
+    """
+    return """
+    <html>
+    <head>
+        <title>Login Status</title>
+        <style>
+            body { margin: 0; font-family: Arial, sans-serif; }
+            .status { position: absolute; top: 0; left: 0; margin: 10px; font-size: 16px; }
+        </style>
+    </head>
+    <body>
+        <div class="status">already logged in</div>
+    </body>
+    </html>
+    """
+
 # =========================
 # Admin Login + Dashboard (start)
 # =========================
