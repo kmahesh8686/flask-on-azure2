@@ -30,6 +30,7 @@ vehicle_otps = {t: [] for t in PREDEFINED_TOKENS}
 otp_data = {t: [] for t in PREDEFINED_TOKENS}         # all delivered/removed OTPs with reasons
 client_sessions = {t: {} for t in PREDEFINED_TOKENS}
 browser_queues = {t: {} for t in PREDEFINED_TOKENS}
+group_assignments = {t: {} for t in PREDEFINED_TOKENS}  # New: for mobile group OTP sharing
 login_sessions = {t: {} for t in PREDEFINED_TOKENS}
 
 BROWSER_STALE_SECONDS = float(10)
@@ -98,6 +99,19 @@ def cleanup_stale_browsers_and_handle_pending(token, identifier):
                 pass
             sessions.pop((identifier, b), None)
 
+            # If in group assignment, remove from it
+            if identifier in group_assignments[token]:
+                ass = group_assignments[token][identifier]
+                ass['browsers'].discard(b)
+                ass['received'].discard(b)
+                if not ass['browsers']:
+                    # Clean up assignment and remove OTP if still pending
+                    for o in list(mobile_otps[token]):
+                        if o.get("sim_number", "").upper() == identifier.upper() and o["otp"] == ass["otp"]:
+                            mobile_otps[token].remove(o)
+                            break
+                    group_assignments[token].pop(identifier, None)
+
             for p in list(mobile_otps[token]):
                 if (p.get("sim_number") or "").upper() == identifier.upper() and p["timestamp"] > first_req_dt:
                     try:
@@ -112,6 +126,34 @@ def cleanup_stale_browsers_and_handle_pending(token, identifier):
                     except ValueError:
                         pass
                     mark_otp_removed_to_data(token, p, reason="stale_browser", browser_id=b)
+
+def cleanup_group_assignment(token, identifier):
+    if identifier not in group_assignments[token]:
+        return
+    ass = group_assignments[token][identifier]
+    if len(ass['received']) == len(ass['browsers']) or time.time() - ass['assigned_at'] > 10:
+        # Remove OTP if still in pending
+        for o in list(mobile_otps[token]):
+            if o.get("sim_number", "").upper() == identifier.upper() and o["otp"] == ass["otp"]:
+                mobile_otps[token].remove(o)
+                entry = o.copy()
+                break
+        else:
+            entry = {
+                "otp": ass["otp"],
+                "sim_number": identifier,
+                "timestamp": datetime.now(IST)
+            }
+        entry["browser_id"] = ",".join(ass['browsers'])
+        otp_data[token].append(entry)
+        # Remove browsers from queue and sessions
+        queues = browser_queues[token]
+        if identifier in queues:
+            for b in list(ass['browsers']):
+                if b in queues[identifier]:
+                    queues[identifier].remove(b)
+                client_sessions[token].pop((identifier, b), None)
+        group_assignments[token].pop(identifier, None)
 
 # =========================
 # API Endpoints (clients)
@@ -128,7 +170,7 @@ def receive_otp():
         if not otp or not token:
             return jsonify({"status": "error", "message": "OTP and token required"}), 400
         if not valid_token(token):
-            return jsonify({"status": "error", "message": "Invalid token"}), 403
+            return jupytext({"status": "error", "message": "Invalid token"}), 403
 
         # Enforce mobile cap only for mobiles (not vehicles)
         if not vehicle:
@@ -155,6 +197,12 @@ def receive_otp():
         else:
             entry["sim_number"] = sim_number or "UNKNOWNSIM"
             mobile_otps[token].append(entry)
+            # Check if group assignment active, move to data as duplicate
+            identifier = entry["sim_number"]
+            if identifier in group_assignments[token]:
+                mobile_otps[token].remove(entry)
+                mark_otp_removed_to_data(token, entry, reason="duplicate")
+                return jsonify({"status": "success", "message": "OTP stored"}), 200
 
         return jsonify({"status": "success", "message": "OTP stored"}), 200
     except Exception as e:
@@ -211,24 +259,67 @@ def get_latest_otp():
         if exceeded:
             return jsonify({"status": "error", "message": "limit_exceeded"}), 403
 
-        new_otps = [o for o in mobile_otps[token] if o["sim_number"] == sim_number and o["timestamp"] > session_time]
-        if new_otps and next_browser == browser_id:
-            latest = new_otps[0]
-            try:
-                mobile_otps[token].remove(latest)
-            except ValueError:
-                pass
-            latest["browser_id"] = browser_id
-            otp_data[token].append(latest)
-            pop_browser_from_queue(token, identifier)
-            client_sessions[token].pop(cs_key, None)
-            return jsonify({
-                "status": "success",
-                "otp": latest["otp"],
-                "sim_number": latest["sim_number"],
-                "browser_id": browser_id,
-                "timestamp": latest["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
-            }), 200
+        # New logic for mobiles with group sharing
+        queues = browser_queues[token]
+        queue = queues.get(identifier, [])
+        if not queue:
+            return jsonify({"status": "waiting"}), 200
+
+        # Determine leading group
+        first_time = client_sessions[token][(identifier, queue[0])]["first_request"]
+        group = []
+        for b in queue:
+            this_time = client_sessions[token][(identifier, b)]["first_request"]
+            if (this_time - first_time).total_seconds() > 2:
+                break
+            group.append(b)
+
+        assignment = group_assignments[token].get(identifier, None)
+        if assignment:
+            if browser_id in assignment["browsers"]:
+                assignment["received"].add(browser_id)
+                cleanup_group_assignment(token, identifier)
+                return jsonify({
+                    "status": "success",
+                    "otp": assignment["otp"],
+                    "sim_number": sim_number,
+                    "browser_id": browser_id,
+                    "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")  # Use current time or store original
+                }), 200
+            else:
+                return jsonify({"status": "waiting"}), 200
+        else:
+            first_sess_time = client_sessions[token][(identifier, queue[0])]["first_request"]
+            new_otps = [o for o in mobile_otps[token] if o["sim_number"] == sim_number and o["timestamp"] > first_sess_time]
+            if new_otps:
+                otp_entry = new_otps[0]
+                # Move remaining OTPs to data as duplicate
+                for extra in new_otps[1:]:
+                    try:
+                        mobile_otps[token].remove(extra)
+                    except ValueError:
+                        pass
+                    mark_otp_removed_to_data(token, extra, reason="duplicate")
+                # Assign to group (do not remove otp_entry yet)
+                group_set = set(group)
+                group_assignments[token][identifier] = {
+                    "otp": otp_entry["otp"],
+                    "browsers": group_set,
+                    "received": set(),
+                    "assigned_at": time.time(),
+                    "original_timestamp": otp_entry["timestamp"]
+                }
+                # If this browser in group, deliver
+                if browser_id in group_set:
+                    group_assignments[token][identifier]["received"].add(browser_id)
+                    cleanup_group_assignment(token, identifier)
+                    return jsonify({
+                        "status": "success",
+                        "otp": otp_entry["otp"],
+                        "sim_number": sim_number,
+                        "browser_id": browser_id,
+                        "timestamp": otp_entry["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+                    }), 200
         return jsonify({"status": "waiting"}), 200
 
 @app.route('/api/login-detect', methods=['POST'])
