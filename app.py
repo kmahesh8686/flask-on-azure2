@@ -142,7 +142,7 @@ def cleanup_group_assignment(token, identifier):
             entry = {
                 "otp": ass["otp"],
                 "sim_number": identifier,
-                "timestamp": datetime.now(IST)
+                "timestamp": ass["original_timestamp"]
             }
         entry["browser_id"] = ",".join(ass['browsers'])
         otp_data[token].append(entry)
@@ -170,7 +170,7 @@ def receive_otp():
         if not otp or not token:
             return jsonify({"status": "error", "message": "OTP and token required"}), 400
         if not valid_token(token):
-            return jupytext({"status": "error", "message": "Invalid token"}), 403
+            return jsonify({"status": "error", "message": "Invalid token"}), 403
 
         # Enforce mobile cap only for mobiles (not vehicles)
         if not vehicle:
@@ -197,12 +197,15 @@ def receive_otp():
         else:
             entry["sim_number"] = sim_number or "UNKNOWNSIM"
             mobile_otps[token].append(entry)
-            # Check if group assignment active, move to data as duplicate
+            # Check if group assignment active, ignore if count >0
             identifier = entry["sim_number"]
             if identifier in group_assignments[token]:
-                mobile_otps[token].remove(entry)
-                mark_otp_removed_to_data(token, entry, reason="duplicate")
-                return jsonify({"status": "success", "message": "OTP stored"}), 200
+                ass = group_assignments[token][identifier]
+                if ass.get('ignore_count', 0) > 0:
+                    mobile_otps[token].remove(entry)
+                    mark_otp_removed_to_data(token, entry, reason="ignored")
+                    ass['ignore_count'] -= 1
+                # else keep it
 
         return jsonify({"status": "success", "message": "OTP stored"}), 200
     except Exception as e:
@@ -284,7 +287,7 @@ def get_latest_otp():
                     "otp": assignment["otp"],
                     "sim_number": sim_number,
                     "browser_id": browser_id,
-                    "timestamp": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")  # Use current time or store original
+                    "timestamp": assignment["original_timestamp"].strftime("%Y-%m-%d %H:%M:%S")
                 }), 200
             else:
                 return jsonify({"status": "waiting"}), 200
@@ -293,13 +296,14 @@ def get_latest_otp():
             new_otps = [o for o in mobile_otps[token] if o["sim_number"] == sim_number and o["timestamp"] > first_sess_time]
             if new_otps:
                 otp_entry = new_otps[0]
-                # Move remaining OTPs to data as duplicate
+                ignored_count = 0
                 for extra in new_otps[1:]:
                     try:
                         mobile_otps[token].remove(extra)
                     except ValueError:
                         pass
-                    mark_otp_removed_to_data(token, extra, reason="duplicate")
+                    mark_otp_removed_to_data(token, extra, reason="ignored")
+                    ignored_count += 1
                 # Assign to group (do not remove otp_entry yet)
                 group_set = set(group)
                 group_assignments[token][identifier] = {
@@ -307,7 +311,8 @@ def get_latest_otp():
                     "browsers": group_set,
                     "received": set(),
                     "assigned_at": time.time(),
-                    "original_timestamp": otp_entry["timestamp"]
+                    "original_timestamp": otp_entry["timestamp"],
+                    "ignore_count": max(0, len(group) - 1 - ignored_count)
                 }
                 # If this browser in group, deliver
                 if browser_id in group_set:
