@@ -27,7 +27,7 @@ token_processed_mobiles = {t: set() for t in PREDEFINED_TOKENS}
 # =========================
 mobile_otps = {t: [] for t in PREDEFINED_TOKENS}
 vehicle_otps = {t: [] for t in PREDEFINED_TOKENS}
-otp_data = {t: [] for t in PREDEFINED_TOKENS}         # all delivered/removed OTPs with reasons
+otp_data = {t: [] for t in PREDEFINED_TOKENS}
 client_sessions = {t: {} for t in PREDEFINED_TOKENS}
 browser_queues = {t: {} for t in PREDEFINED_TOKENS}
 group_assignments = {t: {} for t in PREDEFINED_TOKENS}  # New: for mobile group OTP sharing
